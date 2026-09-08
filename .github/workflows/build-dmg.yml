@@ -52,6 +52,8 @@ jobs:
         run: |
           cat > "$RUNNER_TEMP/tauri.ci.conf.json" <<'JSON'
           {
+            "productName": "MonoApp-Copilot",
+            "identifier": "com.monocode.copilot",
             "bundle": {
               "createUpdaterArtifacts": false,
               "macOS": {
@@ -79,7 +81,7 @@ jobs:
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v7
         with:
-          name: monocode-macos-dmg-${{ steps.revision.outputs.sha }}
+          name: monocode-copilot-macos-dmg-${{ steps.revision.outputs.sha }}
           path: target/release/bundle/dmg/*.dmg
           if-no-files-found: error
           retention-days: 30

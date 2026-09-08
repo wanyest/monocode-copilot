@@ -13,7 +13,7 @@
   <img width="1680" height="1050" alt="Screenshot 2026-09-04 at 06 34 00" src="https://github.com/user-attachments/assets/2cd4a6ec-eb1e-4b45-8627-a76442ea3874" />
 </p>
 
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, Pi, omp, and fx. If they’re installed and logged in, MonoCode can run them. Tabs are sessions. The composer is the input. MonoCode does not sell tokens.
+Works with your subscriptions on Claude Code, Codex, GitHub Copilot, Cursor, Grok Build, OpenCode, Pi, omp, and fx. If they’re installed and logged in, MonoCode can run them. Tabs are sessions. The composer is the input. MonoCode does not sell tokens.
 
 ## Install
 
@@ -21,6 +21,7 @@ Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCod
 >
 > - [Claude Code](https://claude.com/product/claude-code) - `claude auth login`
 > - [Codex](https://developers.openai.com/codex/cli) - `codex login`
+> - [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli) - `copilot login`
 > - [Cursor CLI](https://cursor.com/cli) - `agent login`
 > - [Grok Build](https://docs.x.ai/build/overview) - `curl -fsSL https://x.ai/cli/install.sh | bash` then `grok login`
 > - [OpenCode](https://opencode.ai) - `opencode auth login`
@@ -49,6 +50,12 @@ Need Node.js 20+ and a current stable Rust toolchain. On Linux, ensure standard 
 ```bash
 npm install
 npm run tauri dev
+```
+
+To run the standalone Copilot-branded app variant:
+
+```bash
+npm run tauri:copilot
 ```
 
 ### Ubuntu / Debian packages

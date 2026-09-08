@@ -263,6 +263,7 @@ pub fn run() {
             cursor_store::cursor_tool_calls,
             harness::harness_resolve_cursor,
             harness::harness_resolve_codex,
+            harness::harness_resolve_copilot,
             harness::harness_resolve_opencode,
             harness::harness_resolve_claude,
             harness::harness_resolve_omp,

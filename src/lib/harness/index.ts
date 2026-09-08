@@ -24,6 +24,14 @@ export {
   bindCodexSession,
 } from "./codex";
 export {
+  sendCopilotTurn,
+  cancelCopilotTurn,
+  respondCopilotApproval,
+  stopCopilotSession,
+  forgetCopilotSession,
+  bindCopilotSession,
+} from "./copilot";
+export {
   sendOpenCodeTurn,
   compactOpenCodeContext,
   cancelOpenCodeTurn,
@@ -110,6 +118,7 @@ export { warmupPiText, warmupOmpText } from "./piText";
 export { warmupGrokText } from "./grokText";
 export { refreshCursorCatalog } from "./cursorCatalog";
 export { refreshCodexCatalog } from "./codexCatalog";
+export { refreshCopilotCatalog } from "./copilotCatalog";
 export { refreshOpenCodeCatalog } from "./opencodeCatalog";
 export { refreshClaudeCatalog } from "./claudeCatalog";
 export { refreshPiCatalog, refreshOmpCatalog } from "./piCatalog";

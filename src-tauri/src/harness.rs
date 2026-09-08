@@ -230,6 +230,19 @@ pub fn harness_resolve_codex() -> Result<CursorBinary, String> {
         })
 }
 
+/// Resolve the GitHub Copilot CLI (`copilot`).
+#[tauri::command(async)]
+pub fn harness_resolve_copilot() -> Result<CursorBinary, String> {
+    resolve_copilot()
+        .map(|path| CursorBinary {
+            path: path.to_string_lossy().into_owned(),
+        })
+        .ok_or_else(|| {
+            "GitHub Copilot CLI not found. Install it from https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli and run `copilot login`, then retry."
+                .into()
+        })
+}
+
 /// Resolve the OpenCode CLI (`opencode`).
 #[tauri::command(async)]
 pub fn harness_resolve_opencode() -> Result<CursorBinary, String> {
@@ -650,6 +663,7 @@ fn is_resolved_harness_binary(command: &str) -> bool {
     [
         resolve_cursor_agent(),
         resolve_codex(),
+        resolve_copilot(),
         resolve_opencode(),
         resolve_claude(),
         resolve_pi(),
@@ -992,6 +1006,7 @@ fn is_harness_argv_token(part: &str) -> bool {
             | "pi-coding-agent"
             | "claude"
             | "codex"
+            | "copilot"
             | "opencode"
             | "grok"
             | "omp"
@@ -1250,6 +1265,28 @@ fn resolve_codex() -> Option<PathBuf> {
     candidates.push(PathBuf::from(
         "/Applications/Codex.app/Contents/Resources/codex",
     ));
+
+    first_binary(candidates)
+}
+
+fn resolve_copilot() -> Option<PathBuf> {
+    let home = dirs_home().map(PathBuf::from);
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(home) = &home {
+        candidates.push(home.join(".local/bin/copilot"));
+        candidates.push(home.join(".npm-global/bin/copilot"));
+        candidates.push(home.join(".cargo/bin/copilot"));
+        candidates.push(home.join("n/bin/copilot"));
+    }
+    #[cfg(target_os = "macos")]
+    candidates.push(PathBuf::from("/opt/homebrew/bin/copilot"));
+    candidates.push(PathBuf::from("/usr/local/bin/copilot"));
+    candidates.push(PathBuf::from("/usr/bin/copilot"));
+    candidates.push(PathBuf::from("/snap/bin/copilot"));
+    if let Some(from_shell) = which_via_login_shell("copilot") {
+        candidates.push(from_shell);
+    }
 
     first_binary(candidates)
 }

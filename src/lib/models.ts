@@ -75,6 +75,13 @@ export const MODELS: AgentModel[] = [
     name: "Composer 2.5",
     nativeId: "composer-2.5",
   },
+
+  {
+    id: "copilot:auto",
+    harness: "copilot",
+    name: "Auto",
+    nativeId: "auto",
+  },
   {
     id: "cursor:gpt-5.4",
     harness: "cursor",
@@ -175,6 +182,7 @@ export const MODELS: AgentModel[] = [
 export const DEFAULT_MODEL_ID: Record<HarnessId, string> = {
   claude: "claude:sonnet-5",
   codex: "",
+  copilot: "copilot:auto",
   cursor: "cursor:composer-2.5",
   grok: "grok:grok-4.6",
   opencode: "opencode:glm-5",
@@ -200,6 +208,7 @@ export type LastModelChoice = {
 const HARNESS_ORDER: HarnessId[] = [
   "claude",
   "codex",
+  "copilot",
   "cursor",
   "grok",
   "opencode",

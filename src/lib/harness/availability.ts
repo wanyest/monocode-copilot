@@ -3,6 +3,7 @@ import { HARNESSES } from "../session";
 import {
   resolveClaudeBinary,
   resolveCodexBinary,
+  resolveCopilotBinary,
   resolveCursorBinary,
   resolveFxBinary,
   resolveGrokBinary,
@@ -21,6 +22,7 @@ export type HarnessAvailability = Record<HarnessId, boolean>;
 const CLI: Record<HarnessId, { name: string; install?: string }> = {
   claude: { name: "Claude Code CLI" },
   codex: { name: "Codex CLI" },
+  copilot: { name: "GitHub Copilot CLI" },
   cursor: { name: "Cursor CLI" },
   grok: {
     name: "Grok Build CLI",
@@ -35,6 +37,7 @@ const CLI: Record<HarnessId, { name: string; install?: string }> = {
 let availability: HarnessAvailability = {
   claude: false,
   codex: false,
+  copilot: false,
   cursor: false,
   grok: false,
   opencode: false,
@@ -114,6 +117,14 @@ export function probeHarnessAvailability(
       if (id === "codex") {
         try {
           await resolveCodexBinary();
+          return [id, true] as const;
+        } catch {
+          return [id, false] as const;
+        }
+      }
+      if (id === "copilot") {
+        try {
+          await resolveCopilotBinary();
           return [id, true] as const;
         } catch {
           return [id, false] as const;

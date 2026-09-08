@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import claude from "../assets/providers/claude.svg";
 import codex from "../assets/providers/codex.svg";
+import copilot from "../assets/providers/copilot.svg";
 import cursor from "../assets/providers/cursor.svg";
 import fx from "../assets/providers/fx.svg";
 import grok from "../assets/providers/grok.svg";
@@ -12,6 +13,7 @@ import type { HarnessId } from "../lib/session";
 export const HARNESS_ICONS: Record<HarnessId, string> = {
   claude,
   codex,
+  copilot,
   cursor,
   grok,
   opencode,
@@ -23,6 +25,7 @@ export const HARNESS_ICONS: Record<HarnessId, string> = {
 /** White marks that must follow `currentColor` so they stay visible in light mode. */
 export const MONOCHROME_HARNESSES = new Set<HarnessId>([
   "cursor",
+  "copilot",
   "grok",
   "opencode",
   "pi",
@@ -58,6 +61,14 @@ export function HarnessIcon({
   harness: HarnessId;
   className?: string;
 }) {
+  if (harness === "copilot") {
+    return (
+      <MonoIcon className={className} viewBox="0 0 32 32">
+        <path d="M7.5 7.25C4.46 7.25 2 9.71 2 12.75v6.5c0 3.04 2.46 5.5 5.5 5.5h2.25v-4H7.5c-.83 0-1.5-.67-1.5-1.5v-6.5c0-.83.67-1.5 1.5-1.5h3.75v-4H7.5Zm17 0h-3.75v4h3.75c.83 0 1.5.67 1.5 1.5v6.5c0 .83-.67 1.5-1.5 1.5h-2.25v4h2.25c3.04 0 5.5-2.46 5.5-5.5v-6.5c0-3.04-2.46-5.5-5.5-5.5Z" />
+        <path d="M9 12.5A3.5 3.5 0 0 1 12.5 9h7a3.5 3.5 0 0 1 3.5 3.5v7a3.5 3.5 0 0 1-3.5 3.5h-7A3.5 3.5 0 0 1 9 19.5v-7Zm4.25 2a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5Zm5.5 0a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5Z" />
+      </MonoIcon>
+    );
+  }
   if (harness === "cursor") {
     return (
       <MonoIcon className={className}>

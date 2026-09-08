@@ -16,6 +16,8 @@
     "set-version": "node scripts/bump-version.mjs",
     "tauri": "tauri",
     "tauri:stable": "tauri dev --no-watch --config src-tauri/tauri.stable.conf.json",
+    "tauri:copilot": "tauri dev --config src-tauri/tauri.copilot.conf.json",
+    "build:copilot": "tauri build --bundles app --config src-tauri/tauri.copilot.conf.json",
     "setup:linux:deb": "bash scripts/install-linux-deps-debian.sh",
     "build:linux": "tauri build --bundles deb,appimage",
     "build:windows": "set \"RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc\" && tauri build --bundles nsis"
