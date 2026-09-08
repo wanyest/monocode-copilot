@@ -1,0 +1,65 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream main
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      sha: ${{ steps.sync.outputs.sha }}
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge upstream changes
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/hardbeat920/monocode.git
+          git fetch --no-tags upstream main
+
+          before=$(git rev-parse HEAD)
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "main already contains the current upstream/main"
+          elif git merge-base --is-ancestor HEAD upstream/main; then
+            git merge --ff-only upstream/main
+          else
+            git merge --no-edit upstream/main
+          fi
+          after=$(git rev-parse HEAD)
+          echo "sha=$after" >> "$GITHUB_OUTPUT"
+
+          if [[ "$before" == "$after" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git push origin HEAD:main
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-dmg:
+    name: Build DMG after upstream update
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    uses: ./.github/workflows/build-dmg.yml
+    with:
+      ref: ${{ needs.sync.outputs.sha }}
