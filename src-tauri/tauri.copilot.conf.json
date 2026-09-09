@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MonoApp-Copilot",
+  "productName": "MonoCode-Copilot",
   "identifier": "com.monocode.copilot",
   "bundle": {
     "createUpdaterArtifacts": false

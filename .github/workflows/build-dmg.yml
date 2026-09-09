@@ -52,7 +52,7 @@ jobs:
         run: |
           cat > "$RUNNER_TEMP/tauri.ci.conf.json" <<'JSON'
           {
-            "productName": "MonoApp-Copilot",
+            "productName": "MonoCode-Copilot",
             "identifier": "com.monocode.copilot",
             "bundle": {
               "createUpdaterArtifacts": false,
@@ -76,7 +76,7 @@ jobs:
             echo "Expected exactly one DMG, found ${#dmg_files[@]}" >&2
             exit 1
           fi
-          ls -lh "${dmg_files[0]}"
+          hdiutil verify "${dmg_files[0]}"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v7

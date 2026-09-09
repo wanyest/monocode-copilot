@@ -264,6 +264,7 @@ pub fn run() {
             harness::harness_resolve_cursor,
             harness::harness_resolve_codex,
             harness::harness_resolve_copilot,
+            harness::harness_copilot_models,
             harness::harness_resolve_opencode,
             harness::harness_resolve_claude,
             harness::harness_resolve_omp,

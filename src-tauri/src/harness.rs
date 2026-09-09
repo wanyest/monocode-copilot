@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -63,6 +63,13 @@ pub struct HarnessHttpResponse {
 #[serde(rename_all = "camelCase")]
 pub struct CursorBinary {
     pub path: String,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CopilotModel {
+    pub id: String,
+    pub name: String,
 }
 
 struct LiveChild {
@@ -241,6 +248,14 @@ pub fn harness_resolve_copilot() -> Result<CursorBinary, String> {
             "GitHub Copilot CLI not found. Install it from https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli and run `copilot login`, then retry."
                 .into()
         })
+}
+
+/// Ask Copilot CLI for the models available to its authenticated user.
+#[tauri::command]
+pub async fn harness_copilot_models() -> Result<Vec<CopilotModel>, String> {
+    tauri::async_runtime::spawn_blocking(query_copilot_models)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Resolve the OpenCode CLI (`opencode`).
@@ -732,6 +747,181 @@ fn exec_capture(command: &str, args: &[String], cwd: Option<&str>) -> Result<Str
             Err(format!("{command} timed out"))
         }
     }
+}
+
+fn query_copilot_models() -> Result<Vec<CopilotModel>, String> {
+    let command = resolve_copilot().ok_or_else(|| {
+        "GitHub Copilot CLI not found. Install it and run `copilot login`, then retry.".to_string()
+    })?;
+    let command_text = command.to_string_lossy().into_owned();
+    let mut cmd = Command::new(&command);
+    cmd.args(["--headless", "--stdio", "--no-auto-update"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    prepare_child(&mut cmd, &command_text);
+    if let Some(home) = dirs_home() {
+        cmd.current_dir(home);
+    }
+
+    let mut child =
+        spawn_managed(&mut cmd).map_err(|e| format!("Failed to run {command_text}: {e}"))?;
+    let pid = child.id();
+    let Some(stdin) = child.stdin.take() else {
+        terminate(pid);
+        let _ = child.wait();
+        return Err("Copilot CLI did not open stdin".into());
+    };
+    let Some(stdout) = child.stdout.take() else {
+        terminate(pid);
+        let _ = child.wait();
+        return Err("Copilot CLI did not open stdout".into());
+    };
+
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdin = stdin;
+        let mut stdout = BufReader::new(stdout);
+        let result = query_copilot_models_rpc(&mut stdin, &mut stdout);
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(Duration::from_secs(20)) {
+        Ok(result) => result,
+        Err(_) => {
+            terminate(pid);
+            Err("Copilot model discovery timed out".into())
+        }
+    }
+}
+
+fn query_copilot_models_rpc<W: Write, R: BufRead>(
+    writer: &mut W,
+    reader: &mut R,
+) -> Result<Vec<CopilotModel>, String> {
+    write_copilot_rpc_request(
+        writer,
+        1,
+        "connect",
+        serde_json::json!({
+            "supportedTaskKinds": ["agent", "client", "shell"]
+        }),
+    )?;
+    read_copilot_rpc_response(reader, 1, "connect")?;
+
+    write_copilot_rpc_request(writer, 2, "models.list", serde_json::json!({}))?;
+    let result = read_copilot_rpc_response(reader, 2, "models.list")?;
+    let models = parse_copilot_model_result(&result);
+    if models.is_empty() {
+        return Err("Copilot CLI returned no available models".into());
+    }
+    Ok(models)
+}
+
+fn write_copilot_rpc_request<W: Write>(
+    writer: &mut W,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<(), String> {
+    let body = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": method,
+        "params": params,
+    }))
+    .map_err(|e| format!("Failed to encode Copilot request: {e}"))?;
+    write!(writer, "Content-Length: {}\r\n\r\n", body.len())
+        .and_then(|_| writer.write_all(&body))
+        .and_then(|_| writer.flush())
+        .map_err(|e| format!("Failed to write to Copilot CLI: {e}"))
+}
+
+fn read_copilot_rpc_response<R: BufRead>(
+    reader: &mut R,
+    expected_id: u64,
+    method: &str,
+) -> Result<serde_json::Value, String> {
+    loop {
+        let message = read_copilot_rpc_message(reader)?;
+        if message.get("id").and_then(serde_json::Value::as_u64) != Some(expected_id) {
+            continue;
+        }
+        if let Some(error) = message.get("error") {
+            let detail = error
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| error.to_string());
+            return Err(format!("Copilot CLI {method} failed: {detail}"));
+        }
+        return message
+            .get("result")
+            .cloned()
+            .ok_or_else(|| format!("Copilot CLI {method} returned no result"));
+    }
+}
+
+fn read_copilot_rpc_message<R: BufRead>(reader: &mut R) -> Result<serde_json::Value, String> {
+    let mut content_length = None;
+    loop {
+        let mut line = String::new();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("Failed to read Copilot response header: {e}"))?;
+        if read == 0 {
+            return Err("Copilot CLI closed before returning a response".into());
+        }
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            break;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            content_length = value.trim().parse::<usize>().ok();
+        }
+    }
+
+    let length =
+        content_length.ok_or_else(|| "Copilot response has no Content-Length".to_string())?;
+    if length > 16 * 1024 * 1024 {
+        return Err("Copilot response is unexpectedly large".into());
+    }
+    let mut body = vec![0_u8; length];
+    reader
+        .read_exact(&mut body)
+        .map_err(|e| format!("Failed to read Copilot response body: {e}"))?;
+    serde_json::from_slice(&body).map_err(|e| format!("Invalid Copilot JSON response: {e}"))
+}
+
+fn parse_copilot_model_result(result: &serde_json::Value) -> Vec<CopilotModel> {
+    let Some(rows) = result.get("models").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    rows.iter()
+        .filter_map(|row| {
+            let id = row.get("id")?.as_str()?.trim();
+            if id.is_empty() || !seen.insert(id.to_string()) {
+                return None;
+            }
+            let name = row
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(id);
+            Some(CopilotModel {
+                id: id.to_string(),
+                name: name.to_string(),
+            })
+        })
+        .collect()
 }
 
 const KILL_ESCALATE: Duration = Duration::from_secs(2);
@@ -2524,6 +2714,70 @@ mod tests {
         let id = passwd_identity().expect("passwd");
         assert!(!id.user.is_empty());
         assert!(PathBuf::from(&id.home).is_dir());
+    }
+}
+
+#[cfg(test)]
+mod copilot_rpc_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn frame(value: serde_json::Value) -> Vec<u8> {
+        let body = serde_json::to_vec(&value).unwrap();
+        let mut framed = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        framed.extend_from_slice(&body);
+        framed
+    }
+
+    #[test]
+    fn writes_and_reads_content_length_json_rpc() {
+        let mut framed = Vec::new();
+        write_copilot_rpc_request(&mut framed, 7, "models.list", serde_json::json!({})).unwrap();
+        let message = read_copilot_rpc_message(&mut Cursor::new(framed)).unwrap();
+        assert_eq!(message["jsonrpc"], "2.0");
+        assert_eq!(message["id"], 7);
+        assert_eq!(message["method"], "models.list");
+    }
+
+    #[test]
+    fn reads_the_expected_response_among_notifications() {
+        let mut input = frame(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "status.changed",
+            "params": {}
+        }));
+        input.extend(frame(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {"models": []}
+        })));
+        let result = read_copilot_rpc_response(&mut Cursor::new(input), 2, "models.list").unwrap();
+        assert_eq!(result, serde_json::json!({"models": []}));
+    }
+
+    #[test]
+    fn parses_and_deduplicates_copilot_models() {
+        let models = parse_copilot_model_result(&serde_json::json!({
+            "models": [
+                {"id": "gpt-6-astra", "name": "GPT-6 Astra"},
+                {"id": "gpt-6-astra", "name": "Duplicate"},
+                {"id": "org-model"},
+                {"name": "Missing id"}
+            ]
+        }));
+        assert_eq!(
+            models,
+            vec![
+                CopilotModel {
+                    id: "gpt-6-astra".into(),
+                    name: "GPT-6 Astra".into(),
+                },
+                CopilotModel {
+                    id: "org-model".into(),
+                    name: "org-model".into(),
+                },
+            ]
+        );
     }
 }
 

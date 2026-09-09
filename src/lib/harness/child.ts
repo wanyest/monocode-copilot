@@ -293,6 +293,12 @@ export function resolveCopilotBinary(): Promise<{ path: string }> {
   return invoke("harness_resolve_copilot");
 }
 
+export function listCopilotModels(): Promise<
+  Array<{ id: string; name: string }>
+> {
+  return invoke("harness_copilot_models");
+}
+
 export function resolveOpenCodeBinary(): Promise<{ path: string }> {
   return invoke("harness_resolve_opencode");
 }
