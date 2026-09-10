@@ -1057,7 +1057,9 @@ function SidebarComponent({
           {isChangesTab && hasChangeStats ? (
             <DiffStat additions={changeAdditions} deletions={changeDeletions} />
           ) : (
-            <span className="block truncate">{TAB_LABELS[itemId]}</span>
+            <span className="block truncate leading-label">
+              {TAB_LABELS[itemId]}
+            </span>
           )}
         </button>
       </div>
