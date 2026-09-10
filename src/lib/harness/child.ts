@@ -294,7 +294,13 @@ export function resolveCopilotBinary(): Promise<{ path: string }> {
 }
 
 export function listCopilotModels(): Promise<
-  Array<{ id: string; name: string }>
+  Array<{
+    id: string;
+    name: string;
+    contextWindow?: number;
+    longContextWindow?: number;
+    supportsLongContext?: boolean;
+  }>
 > {
   return invoke("harness_copilot_models");
 }

@@ -60,13 +60,16 @@ async function waitFor(predicate: () => boolean, label: string) {
   throw new Error(`timed out waiting for ${label}`);
 }
 
-async function startTurn() {
+async function startTurn(
+  modelSettings: Record<string, string> = {},
+  setupMethod: "session/new" | "session/load" = "session/new",
+) {
   const events: HarnessEvent[] = [];
   const turn = sendCopilotTurn({
     sessionId: "copilot-live",
     cwd: "/repo",
     model: "copilot:gpt-5.4",
-    modelSettings: {},
+    modelSettings,
     runtimeMode: "supervised",
     text: "inspect the project",
     attachments: [],
@@ -75,8 +78,8 @@ async function startTurn() {
 
   await waitFor(() => !!outbound("initialize"), "initialize");
   reply(outbound("initialize")!.id as number, { protocolVersion: 1 });
-  await waitFor(() => !!outbound("session/new"), "session/new");
-  reply(outbound("session/new")!.id as number, { sessionId: "copilot_1" });
+  await waitFor(() => !!outbound(setupMethod), setupMethod);
+  reply(outbound(setupMethod)!.id as number, { sessionId: "copilot_1" });
   await waitFor(() => !!outbound("session/set_model"), "session/set_model");
   reply(outbound("session/set_model")!.id as number, {});
   await waitFor(() => !!outbound("session/set_mode"), "session/set_mode");
@@ -111,7 +114,13 @@ describe("GitHub Copilot ACP adapter", () => {
     const { events, promptId, turn } = await startTurn();
     expect(spawned).toEqual({
       command: "/fake/copilot",
-      args: ["--acp", "--stdio", "--no-auto-update"],
+      args: [
+        "--acp",
+        "--stdio",
+        "--no-auto-update",
+        "--context",
+        "default",
+      ],
       cwd: "/repo",
     });
     expect(outbound("session/set_model")?.params).toEqual({
@@ -131,6 +140,37 @@ describe("GitHub Copilot ACP adapter", () => {
 
     expect(events).toContainEqual({ type: "message.delta", text: "Done" });
     expect(events).toContainEqual({ type: "message.completed" });
+  });
+
+  it("restarts and resumes the session when extended context is selected", async () => {
+    const first = await startTurn();
+    reply(first.promptId, { stopReason: "end_turn" });
+    await first.turn;
+
+    sent.length = 0;
+    const second = await startTurn(
+      { context: "long_context" },
+      "session/load",
+    );
+    expect(spawned).toEqual({
+      command: "/fake/copilot",
+      args: [
+        "--acp",
+        "--stdio",
+        "--no-auto-update",
+        "--context",
+        "long_context",
+      ],
+      cwd: "/repo",
+    });
+    expect(outbound("session/load")?.params).toEqual({
+      sessionId: "copilot_1",
+      cwd: "/repo",
+      mcpServers: [],
+    });
+
+    reply(second.promptId, { stopReason: "end_turn" });
+    await second.turn;
   });
 
   it("surfaces supervised permission requests and returns the decision", async () => {

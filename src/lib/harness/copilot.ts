@@ -32,6 +32,7 @@ type Live = {
   acp: AcpClient;
   acpSessionId: string;
   cwd: string;
+  contextTier: CopilotContextTier;
   muteUpdates: boolean;
   cancelled: boolean;
   runtimeMode: RuntimeMode;
@@ -45,6 +46,8 @@ type Resume = {
   acpSessionId: string;
   cwd: string;
 };
+
+type CopilotContextTier = "default" | "long_context";
 
 const CLIENT_CAPABILITIES = {
   fs: { readTextFile: false, writeTextFile: false },
@@ -170,15 +173,20 @@ export function bindCopilotSession(
 }
 
 async function ensureLive(input: SendTurnInput): Promise<Live> {
+  const contextTier = copilotContextTier(input.modelSettings);
   const existing = liveByThread.get(input.sessionId);
-  if (existing && existing.cwd === input.cwd) {
+  if (
+    existing &&
+    existing.cwd === input.cwd &&
+    existing.contextTier === contextTier
+  ) {
     existing.onEvent = input.onEvent;
     existing.runtimeMode = input.runtimeMode;
     existing.planning = input.intent === "plan";
     return existing;
   }
   if (existing) {
-    resumeByThread.delete(input.sessionId);
+    if (existing.cwd !== input.cwd) resumeByThread.delete(input.sessionId);
     await stopCopilotSession(input.sessionId);
   }
 
@@ -233,7 +241,7 @@ async function ensureLive(input: SendTurnInput): Promise<Live> {
   await spawnChild(
     input.sessionId,
     path,
-    ["--acp", "--stdio", "--no-auto-update"],
+    ["--acp", "--stdio", "--no-auto-update", "--context", contextTier],
     input.cwd,
   );
 
@@ -290,6 +298,7 @@ async function ensureLive(input: SendTurnInput): Promise<Live> {
       acp,
       acpSessionId,
       cwd: input.cwd,
+      contextTier,
       muteUpdates: didLoad,
       cancelled: false,
       runtimeMode: input.runtimeMode,
@@ -312,6 +321,12 @@ async function ensureLive(input: SendTurnInput): Promise<Live> {
     await stopCopilotSession(input.sessionId);
     throw error;
   }
+}
+
+function copilotContextTier(
+  settings: Record<string, string> | undefined,
+): CopilotContextTier {
+  return settings?.context === "long_context" ? "long_context" : "default";
 }
 
 async function applyModelSelection(live: Live, model: string): Promise<void> {

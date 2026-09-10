@@ -70,6 +70,9 @@ pub struct CursorBinary {
 pub struct CopilotModel {
     pub id: String,
     pub name: String,
+    pub context_window: Option<u64>,
+    pub long_context_window: Option<u64>,
+    pub supports_long_context: bool,
 }
 
 struct LiveChild {
@@ -916,12 +919,60 @@ fn parse_copilot_model_result(result: &serde_json::Value) -> Vec<CopilotModel> {
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
                 .unwrap_or(id);
+            let limits = row
+                .get("capabilities")
+                .and_then(|value| value.get("limits"));
+            let context_window = limits.and_then(|value| {
+                json_u64(value, "max_context_window_tokens")
+                    .or_else(|| json_u64(value, "maxContextWindowTokens"))
+            });
+            let max_output_tokens = limits.and_then(|value| {
+                json_u64(value, "max_output_tokens").or_else(|| json_u64(value, "maxOutputTokens"))
+            });
+            let long_context = row
+                .get("billing")
+                .and_then(|value| {
+                    value
+                        .get("tokenPrices")
+                        .or_else(|| value.get("token_prices"))
+                })
+                .and_then(|value| {
+                    value
+                        .get("longContext")
+                        .or_else(|| value.get("long_context"))
+                })
+                .filter(|value| value.is_object());
+            let long_prompt_tokens = long_context.and_then(|value| {
+                json_u64(value, "maxPromptTokens").or_else(|| json_u64(value, "max_prompt_tokens"))
+            });
+            let supported_tiers = row
+                .get("supportedContextTiers")
+                .or_else(|| row.get("supported_context_tiers"))
+                .and_then(serde_json::Value::as_array);
+            let supports_long_context = long_context.is_some()
+                || supported_tiers.is_some_and(|tiers| {
+                    tiers
+                        .iter()
+                        .any(|tier| tier.as_str() == Some("long_context"))
+                });
+            let long_context_window = long_prompt_tokens.and_then(|prompt| {
+                max_output_tokens
+                    .map(|output| prompt.saturating_add(output))
+                    .or(Some(prompt))
+            });
             Some(CopilotModel {
                 id: id.to_string(),
                 name: name.to_string(),
+                context_window,
+                long_context_window,
+                supports_long_context,
             })
         })
         .collect()
+}
+
+fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(serde_json::Value::as_u64)
 }
 
 const KILL_ESCALATE: Duration = Duration::from_secs(2);
@@ -2759,9 +2810,23 @@ mod copilot_rpc_tests {
     fn parses_and_deduplicates_copilot_models() {
         let models = parse_copilot_model_result(&serde_json::json!({
             "models": [
-                {"id": "gpt-6-astra", "name": "GPT-6 Astra"},
+                {
+                    "id": "gpt-6-astra",
+                    "name": "GPT-6 Astra",
+                    "capabilities": {
+                        "limits": {
+                            "max_context_window_tokens": 200000,
+                            "max_output_tokens": 64000
+                        }
+                    },
+                    "billing": {
+                        "tokenPrices": {
+                            "longContext": {"maxPromptTokens": 936000}
+                        }
+                    }
+                },
                 {"id": "gpt-6-astra", "name": "Duplicate"},
-                {"id": "org-model"},
+                {"id": "org-model", "supportedContextTiers": ["default", "long_context"]},
                 {"name": "Missing id"}
             ]
         }));
@@ -2771,10 +2836,16 @@ mod copilot_rpc_tests {
                 CopilotModel {
                     id: "gpt-6-astra".into(),
                     name: "GPT-6 Astra".into(),
+                    context_window: Some(200_000),
+                    long_context_window: Some(1_000_000),
+                    supports_long_context: true,
                 },
                 CopilotModel {
                     id: "org-model".into(),
                     name: "org-model".into(),
+                    context_window: None,
+                    long_context_window: None,
+                    supports_long_context: true,
                 },
             ]
         );

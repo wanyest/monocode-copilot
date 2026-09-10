@@ -6,7 +6,13 @@ describe("GitHub Copilot model catalog", () => {
     expect(
       copilotModelsFromList([
         { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
-        { id: "gpt-6-astra", name: "GPT-6 Astra" },
+        {
+          id: "gpt-6-astra",
+          name: "GPT-6 Astra",
+          contextWindow: 200_000,
+          longContextWindow: 1_000_000,
+          supportsLongContext: true,
+        },
         { id: "org-custom-model", name: "Organization model" },
       ]),
     ).toEqual([
@@ -27,6 +33,21 @@ describe("GitHub Copilot model catalog", () => {
         harness: "copilot",
         name: "GPT-6 Astra",
         nativeId: "gpt-6-astra",
+        contextWindow: 200_000,
+        settings: [
+          {
+            id: "context",
+            label: "Context",
+            kind: "select",
+            value: "default",
+            options: [
+              { value: "default", label: "Default (200K)" },
+              { value: "long_context", label: "Extended (1M)" },
+            ],
+            description:
+              "Use Copilot's larger context tier. Extended context may use more AI credits.",
+          },
+        ],
       },
       {
         id: "copilot:org-custom-model",

@@ -1,3 +1,4 @@
+import { formatTokens } from "../contextUsage";
 import { setHarnessModels, type AgentModel } from "../models";
 import { listCopilotModels } from "./child";
 
@@ -90,12 +91,51 @@ export function copilotModelsFromList(rows: unknown): AgentModel[] {
       typeof rec.name === "string" && rec.name.trim()
         ? rec.name.trim()
         : nativeId;
+    const contextWindow = positiveNumber(rec.contextWindow);
+    const longContextWindow = positiveNumber(rec.longContextWindow);
+    const supportsLongContext =
+      rec.supportsLongContext === true || longContextWindow != null;
     models.push({
       id: `copilot:${nativeId}`,
       harness: "copilot",
       name,
       nativeId,
+      ...(contextWindow ? { contextWindow } : {}),
+      ...(supportsLongContext
+        ? {
+            settings: [
+              {
+                id: "context",
+                label: "Context",
+                kind: "select",
+                value: "default",
+                options: [
+                  {
+                    value: "default",
+                    label: contextLabel("Default", contextWindow),
+                  },
+                  {
+                    value: "long_context",
+                    label: contextLabel("Extended", longContextWindow),
+                  },
+                ],
+                description:
+                  "Use Copilot's larger context tier. Extended context may use more AI credits.",
+              },
+            ],
+          }
+        : {}),
     });
   }
   return models;
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function contextLabel(label: string, tokens: number | undefined): string {
+  return tokens ? `${label} (${formatTokens(tokens)})` : label;
 }
