@@ -145,6 +145,7 @@ export {
   cancelHarnessTurn,
   respondHarnessApproval,
   respondHarnessQuestion,
+  keepHarnessQuestionOpen,
   stopHarnessSession,
   forgetHarnessSession,
   bindHarnessSession,

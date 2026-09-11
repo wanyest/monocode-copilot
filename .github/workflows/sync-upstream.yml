@@ -44,7 +44,38 @@ jobs:
           elif git merge-base --is-ancestor HEAD upstream/main; then
             git merge --ff-only upstream/main
           else
-            git merge --no-edit upstream/main
+            if ! git merge --no-edit upstream/main; then
+              mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+              unexpected=()
+
+              for file in "${conflicts[@]}"; do
+                case "$file" in
+                  .github/workflows/ci.yml|.github/workflows/release.yml)
+                    ;;
+                  *)
+                    unexpected+=("$file")
+                    ;;
+                esac
+              done
+
+              if (( ${#conflicts[@]} == 0 )); then
+                echo "The upstream merge failed without reporting merge conflicts" >&2
+                git merge --abort || true
+                exit 1
+              fi
+              if (( ${#unexpected[@]} > 0 )); then
+                printf 'Unexpected upstream conflict: %s\n' "${unexpected[@]}" >&2
+                git merge --abort
+                exit 1
+              fi
+
+              for file in "${conflicts[@]}"; do
+                echo "Keeping fork-owned workflow: $file"
+                git checkout --ours -- "$file"
+                git add -- "$file"
+              done
+              git commit --no-edit
+            fi
           fi
           after=$(git rev-parse HEAD)
           echo "sha=$after" >> "$GITHUB_OUTPUT"
