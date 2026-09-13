@@ -192,6 +192,16 @@ export type TurnModel = {
   name: string;
 };
 
+/** Provider-reported token accounting for one user turn. */
+export type TurnMetrics = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  /** Provider-normalized share of input served from cache, as a percentage. */
+  cacheHitPercent?: number;
+};
+
 export type Block = {
   id: string;
   role: BlockRole;
@@ -204,6 +214,8 @@ export type Block = {
   durationMs?: number;
   /** Stable model label for this turn. Present on newly created user blocks. */
   turnModel?: TurnModel;
+  /** Provider-reported token metrics for this user turn, when available. */
+  turnMetrics?: TurnMetrics;
   tool?: {
     callId?: string;
     title?: string;
