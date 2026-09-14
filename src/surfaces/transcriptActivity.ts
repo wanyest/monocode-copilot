@@ -173,11 +173,20 @@ export function editVerb(label: string): string {
   return "Edit";
 }
 
-/** User turns, with handoff dividers sitting on their own row. */
-export function groupTurns(blocks: Block[]): Block[][] {
+/**
+ * User turns, with handoff dividers sitting on their own row. `managed` is for
+ * a worker's own transcript, where the app-written turns are the orchestrator
+ * talking to it — the whole prompt side of that conversation, and the only
+ * thing its replies are answering.
+ */
+export function groupTurns(blocks: Block[], managed = false): Block[][] {
   const turns: Block[][] = [];
   let current: Block[] = [];
   for (const block of blocks) {
+    // A turn the app wrote to keep an orchestration moving is not a user
+    // message. Dropping it here folds the reply into the turn above, so a
+    // supervised run reads as one conversation.
+    if (block.internal && !managed) continue;
     if (block.role === "handoff") {
       if (current.length > 0) turns.push(current);
       turns.push([block]);
@@ -682,6 +691,10 @@ export type WorkFold = { start: number; end: number };
  * approval. As the turn streams, each new paragraph folds the work and running
  * commentary before it, leaving the final answer visible. A late approval can
  * reopen that boundary so its controls remain available.
+ *
+ * Persisted interjections (system blocks with interjection chrome) are neither
+ * prose nor work, so they stop the fold: an answer the harness already showed
+ * never folds behind an interjection that arrived after it.
  */
 export function foldableWork(items: TurnItem[]): WorkFold | undefined {
   let end = -1;
