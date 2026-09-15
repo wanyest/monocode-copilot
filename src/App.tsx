@@ -248,6 +248,7 @@ import {
   sameProjectPath,
 } from "./lib/recents";
 import {
+  applyPlaceTabOnPane,
   applyPlaceSessionOnPane,
   filterTabsForProject,
   findOpenSessionTab,
@@ -272,6 +273,7 @@ import {
   type Block,
   type HarnessId,
   type LinkedWorkItem,
+  type ModelTarget,
   type PlanBuildTarget,
   type RuntimeMode,
   type PlanStatus,
@@ -536,7 +538,7 @@ function withPlanBuildTarget(
   target: PlanBuildTarget,
 ): Session {
   const resolved = resolveModel(target.harness, target.model);
-  const modelSettings = preferredModelSettings(resolved, session.modelSettings);
+  const modelSettings = mergeModelSettings(resolved, target.modelSettings);
   const plan = planComposerSwitch(session, target.harness);
   const next = withHarnessChoice(
     session,
@@ -1043,6 +1045,18 @@ export default function App({
     busySessionIdsRef.current = nextBusySessionIds;
   }
   const busySessionIds = busySessionIdsRef.current;
+
+  /** Probe the active session's harness for its live model catalog whenever
+   * the active harness changes. Catalogs load lazily (probing spawns a CLI
+   * process) and the boot refresh runs before restored sessions land, so a
+   * fresh session would otherwise show only the built-in fallback model
+   * until the picker happened to be opened. Idempotent: refreshHarnessCatalogs
+   * dedupes via hasLiveCatalog and its inflight map. */
+  const activeHarness = active?.harness;
+  useEffect(() => {
+    if (!activeHarness || !isLiveHarness(activeHarness)) return;
+    void refreshHarnessCatalogs([activeHarness]);
+  }, [activeHarness]);
 
   const usageProviders = useMemo(() => {
     if (active?.harness === "claude" || active?.harness === "codex") {
@@ -3408,6 +3422,43 @@ export default function App({
     [ensureOpenSession, tabCloseScope],
   );
 
+  const onPlaceTabOnPane = useCallback(
+    (sourceTabId: string, targetId: string, edge: PaneEdge) => {
+      const targetTab = tabsRef.current.find((tab) =>
+        leafIds(tab.layout).includes(targetId),
+      );
+      if (!targetTab || targetTab.id === sourceTabId) return;
+
+      const blankTarget = sessionsRef.current.find(
+        (session) => session.id === targetId && isBlankSession(session),
+      );
+      const result = applyPlaceTabOnPane({
+        tabs: tabsRef.current,
+        sessions: sessionsRef.current,
+        sourceTabId,
+        targetId,
+        edge,
+        replaceTarget: blankTarget != null,
+      });
+      if (!result) return;
+
+      if (blankTarget) {
+        lastPersisted.current.delete(blankTarget.id);
+        void forgetHarnessSession(blankTarget.harness, blankTarget.id);
+      }
+      sessionsRef.current = result.sessions;
+      tabsRef.current = result.tabs;
+      setSessions(result.sessions);
+      setTabs(result.tabs);
+      setActiveTabId(result.activeTabId);
+      setProjectTerminalFocused(false);
+      setComposerFocused(
+        result.sessions.some((session) => session.id === result.focusedId),
+      );
+    },
+    [],
+  );
+
   const onRenameHistorySession = useCallback(
     async (sessionId: string, displayTitle: string) => {
       const trimmed = displayTitle.trim();
@@ -4316,7 +4367,7 @@ export default function App({
       if (controlError) {
         enqueueHarnessEvent(sessionId, { type: "status", text: controlError });
         flushHarnessEvents();
-        return;
+        return false;
       }
       if (options?.managed) {
         const target = sessionsRef.current.find((s) => s.id === sessionId);
@@ -4332,12 +4383,12 @@ export default function App({
             text: "",
             error: "Session is unavailable or already running",
           });
-          return;
+          return false;
         }
       }
-      if (removingSessionIds.current.has(sessionId)) return;
+      if (removingSessionIds.current.has(sessionId)) return false;
       const storedCurrent = sessionsRef.current.find((s) => s.id === sessionId);
-      if (!storedCurrent) return;
+      if (!storedCurrent) return false;
       const current = options?.buildTarget
         ? withPlanBuildTarget(storedCurrent, options.buildTarget)
         : storedCurrent;
@@ -4355,7 +4406,7 @@ export default function App({
             text: error instanceof Error ? error.message : String(error),
           });
           flushHarnessEvents();
-          return;
+          return false;
         }
       }
       const approvedPlan = options?.planBlockId
@@ -4364,12 +4415,12 @@ export default function App({
               block.id === options.planBlockId && block.role === "plan",
           )
         : undefined;
-      if (intent === "build" && !approvedPlan?.text.trim()) return;
+      if (intent === "build" && !approvedPlan?.text.trim()) return false;
       if (options?.queuedMessageId) {
         const mode =
           options.followUpBehavior === "steer" ? "steer" : "dispatch";
         if (!queuedMessageForSubmit(current, options.queuedMessageId, mode)) {
-          return;
+          return false;
         }
       }
       const noteCard =
@@ -4384,9 +4435,9 @@ export default function App({
         !noteCard &&
         !handoffCard
       ) {
-        return;
+        return false;
       }
-      if (isPreparingHandoff(current)) return;
+      if (isPreparingHandoff(current)) return false;
       saveRecentModelChoice(current.harness, current.model);
       const workCwd = sessionWorkCwd(current);
       const submittedText = intent === "build" ? "Build approved plan" : text;
@@ -4432,7 +4483,7 @@ export default function App({
             ),
           );
           dismissNoticesForContinuedSession(sessionId);
-          return;
+          return true;
         }
         if (
           !isLiveHarness(current.harness) ||
@@ -4445,7 +4496,7 @@ export default function App({
             text: `${current.harness} cannot take a follow-up mid-turn — wait for this turn to finish, or stop it first.`,
           });
           flushHarnessEvents();
-          return;
+          return false;
         }
         dismissNoticesForContinuedSession(sessionId);
         const visible = displayAttachments(attachments);
@@ -4497,7 +4548,7 @@ export default function App({
             flushHarnessEvents();
           }
         })();
-        return;
+        return true;
       }
 
       const gen = (turnGen.current.get(sessionId) ?? 0) + 1;
@@ -4684,7 +4735,7 @@ export default function App({
           text: "",
           error: "Harness is not connected",
         });
-        return;
+        return true;
       }
 
       if (proposalId && proposalDraft) {
@@ -4817,7 +4868,11 @@ export default function App({
                   cwd: workCwd,
                 });
           const turnPrompt = proposalDraft
-            ? orchestrationPlanningPrompt(prompt, proposalDraft.settings)
+            ? orchestrationPlanningPrompt(
+                prompt,
+                proposalDraft.settings,
+                proposalDraft.cwd,
+              )
             : intent === "plan" && !rawCommand
               ? planTurnPrompt(prompt)
               : prompt;
@@ -5016,6 +5071,7 @@ export default function App({
               : controlOutcome,
           );
         });
+      return true;
     },
     [
       dismissNoticesForContinuedSession,
@@ -5289,11 +5345,12 @@ export default function App({
   );
 
   const onSecondOpinion = useCallback(
-    (sourceId: string, harness: HarnessId, turn: Block[], model: string) => {
+    (sourceId: string, target: ModelTarget, turn: Block[]) => {
       const source = sessionsRef.current.find(
         (session) => session.id === sourceId,
       );
       if (!source) return;
+      const { harness, model, modelSettings } = target;
       const cwd = sessionWorkCwd(source);
       const from = harnessForTurn(source.blocks, turn, source.harness);
       const userRequest = turnUserRequest(turn);
@@ -5306,6 +5363,10 @@ export default function App({
       });
       const session = {
         ...newSession(harness, cwd, model, source.runtimeMode),
+        modelSettings: mergeModelSettings(
+          resolveModel(harness, model),
+          modelSettings,
+        ),
         title: formatSessionTitle(harness, SECOND_OPINION_TITLE),
       };
       openSessionBeside(sourceId, session, cwd);
@@ -5322,11 +5383,12 @@ export default function App({
   );
 
   const onHandoff = useCallback(
-    (sourceId: string, harness: HarnessId, turn: Block[], model: string) => {
+    (sourceId: string, target: ModelTarget, turn: Block[]) => {
       const source = sessionsRef.current.find(
         (session) => session.id === sourceId,
       );
       if (!source) return;
+      const { harness, model, modelSettings } = target;
       const cwd = sessionWorkCwd(source);
       const from = harnessForTurn(source.blocks, turn, source.harness);
       const sliced = sessionThroughTurn(source, turn);
@@ -5335,6 +5397,10 @@ export default function App({
       const display = sessionDisplayTitle(source.title, source.harness);
       const session = {
         ...newSession(harness, cwd, model, source.runtimeMode),
+        modelSettings: mergeModelSettings(
+          resolveModel(harness, model),
+          modelSettings,
+        ),
         title: formatSessionTitle(
           harness,
           display === "New session" ? HANDOFF_TITLE : display,
@@ -5653,6 +5719,22 @@ export default function App({
           throw new Error(
             "The saved worker no longer matches its approved model. Create a new assignment.",
           );
+        const fresh = {
+          ...newSession(
+            task.harness,
+            run.cwd,
+            task.model,
+            lead.runtimeMode,
+          ),
+          ...(task.modelSettings
+            ? {
+                modelSettings: mergeModelSettings(
+                  resolveModel(task.harness, task.model),
+                  task.modelSettings,
+                ),
+              }
+            : {}),
+        };
         const base = restored
           ? {
               ...restored,
@@ -5662,12 +5744,7 @@ export default function App({
               runtimeMode: lead.runtimeMode,
             }
           : {
-              ...newSession(
-                task.harness,
-                run.cwd,
-                task.model,
-                lead.runtimeMode,
-              ),
+              ...fresh,
               id: task.sessionId,
               title: task.title,
             };
@@ -6865,17 +6942,13 @@ export default function App({
                 onSelect={activateTab}
                 onNew={onNew}
                 onNewTerminal={onNewTerminal}
-                onShowTerminal={onShowProjectTerminal}
-                projectTerminalActive={
-                  !!currentProjectDock &&
-                  currentProjectDock.pane.files.length > 0
-                }
                 onOpenSettings={onOpenSettings}
                 onOpenInbox={onOpenInbox}
                 onOpenNotes={notesEnabled ? onOpenNotes : undefined}
                 onClose={onCloseTitleTab}
                 onCloseMany={onCloseTabs}
                 onReorder={onReorderTabs}
+                onPlaceOnPane={onPlaceTabOnPane}
                 onGoToFile={onGoToFile}
                 recents={recents}
                 onSelectProject={onSelectProject}
@@ -7057,6 +7130,7 @@ export default function App({
                 sessions={sidebarHistory}
                 besideRail
                 onClose={onCloseSettings}
+                onSelectSection={onSelectSettingsSection}
                 onOpenSession={onOpenArchivedSession}
                 onArchiveSession={onArchiveHistorySession}
                 onDeleteSession={onDeleteHistorySession}
@@ -7077,6 +7151,18 @@ export default function App({
                 terminals={runningTerminals}
                 terminalOpen={runningTerminalOpen}
                 onToggleTerminal={onToggleRunningTerminal}
+                onNewTerminal={
+                  looksLikeProject(projectCwd) ? onNewTerminal : undefined
+                }
+                onShowTerminal={
+                  looksLikeProject(projectCwd)
+                    ? onShowProjectTerminal
+                    : undefined
+                }
+                projectTerminalActive={
+                  !!currentProjectDock &&
+                  currentProjectDock.pane.files.length > 0
+                }
               />
             )}
           </div>
@@ -7106,7 +7192,7 @@ export default function App({
             onSnooze={sessionReminders.schedule}
             onDismiss={sessionReminders.cancel}
             onRetry={sessionReminders.refresh}
-            onOpenSettings={() => openSettings()}
+            onOpenSettings={() => openSettings("general", "notifications")}
             onHeightChange={setReminderNoticesHeight}
           />
           {whatsNewVersion ? (
