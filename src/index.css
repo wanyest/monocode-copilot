@@ -5,6 +5,23 @@
 
 @custom-variant dark (&:where(html:not(.theme-light), html:not(.theme-light) *));
 
+@container settings (width < 560px) {
+  .settings-row {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .settings-row-control {
+    max-width: 100%;
+    justify-content: flex-start;
+  }
+
+  .settings-row:has(> .settings-row-control > [role="switch"]:only-child) {
+    flex-direction: row;
+    gap: 1.5rem;
+  }
+}
+
 @theme {
   /* Preserve descenders in compact labels, including two 10px lines in a 30px tab. */
   --leading-label: 1.4;
@@ -774,6 +791,25 @@ header[data-tauri-drag-region] button {
 .agent-markdown p,
 .agent-markdown li {
   color: color-mix(in srgb, var(--color-content) 78%, transparent);
+}
+
+/* AgentMarkdown passes dir="auto", so Streamdown puts every block in its own
+   <div dir="..." style="display: contents"> wrapper. A display:contents box
+   drops its own margins, so Streamdown's `space-y-4` on the root (it targets
+   those wrappers) paints no gap at all. Headings, blockquotes and rules keep
+   their spacing because their margin sits on the element itself (mt-6/mb-2,
+   my-4, my-6); paragraphs and lists carry none, so every "\n\n" started a new
+   <p> with no visible gap and the reply read as one dense block (#218).
+   Put the gap back on the block inside the wrapper, top side only, so a reply
+   never ends with a trailing gap. Ignore empty wrappers before the first
+   visible block, and keep lists closer to the paragraph that introduces them. */
+.agent-markdown > div:not(:empty) ~ div > p {
+  margin-top: 1rem;
+}
+
+.agent-markdown > div:not(:empty) ~ div > [data-streamdown="unordered-list"],
+.agent-markdown > div:not(:empty) ~ div > [data-streamdown="ordered-list"] {
+  margin-top: 0.5rem;
 }
 
 .agent-markdown p strong,
