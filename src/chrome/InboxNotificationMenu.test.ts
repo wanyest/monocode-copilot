@@ -9,6 +9,20 @@ import {
 import { rememberNotificationProjects } from "../lib/notificationProjects";
 import { ProjectRail } from "./ProjectRail";
 import { invoke } from "@tauri-apps/api/core";
+import { inboxItemKey, listInboxItems, type InboxItem } from "../lib/githubTasks";
+import {
+  clearKnownInboxItems,
+  isInboxEntryUnseen,
+  markInboxItemsSeen,
+  rememberInboxItems,
+  seedInboxSeenIfNeeded,
+} from "../lib/inboxSeen";
+import { useInboxActivity } from "../hooks/useInboxUnseen";
+
+vi.mock("../lib/githubTasks", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/githubTasks")>()),
+  listInboxItems: vi.fn(),
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (_command: string, args: { cwd: string }) => ({
@@ -29,6 +43,8 @@ let root: Root;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
+  clearKnownInboxItems();
+  vi.mocked(listInboxItems).mockReset().mockResolvedValue({ items: [], errors: {} });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -77,13 +93,112 @@ async function openInboxMenu() {
   return inbox;
 }
 
+it("uses already loaded Inbox activity immediately even when the provider stops responding", async () => {
+  const item: InboxItem = {
+    provider: "github", kind: "issue", repo: "company/work", number: 1,
+    title: "Inbox update", url: "https://github.com/company/work/issues/1",
+    state: "open", updatedAt: "2026-09-16T10:00:00Z",
+    labels: [], assignees: [], draft: false, projectPath: "/repos/work",
+  };
+  const entry = { key: inboxItemKey(item), updatedAt: item.updatedAt };
+  seedInboxSeenIfNeeded([{ ...entry, updatedAt: "2026-09-15T10:00:00Z" }]);
+  vi.mocked(listInboxItems).mockResolvedValue({ items: [item], errors: {} });
+  const recents = [{ path: "/repos/work", openedAt: 1 }];
+  function Harness() {
+    const activity = useInboxActivity(recents, "/repos/work", []);
+    return createElement(ProjectRail, {
+      cwd: "/repos/work", recents, inboxUnseen: activity.unseen,
+      onSelectProject: vi.fn(), onOpenProject: vi.fn(), onOpenInbox: vi.fn(),
+    });
+  }
+  await act(async () => root.render(createElement(Harness)));
+  vi.mocked(listInboxItems).mockClear().mockImplementation(() => new Promise(() => {}));
+  const inbox = container.querySelector<HTMLElement>('button[aria-label="Inbox, new items"]')!;
+  act(() => inbox.dispatchEvent(new KeyboardEvent("keydown", { key: "ContextMenu", bubbles: true })));
+  expect(button("Mark all as read").disabled).toBe(false);
+  act(() => button("Mark all as read").click());
+  expect(isInboxEntryUnseen(entry)).toBe(false);
+  expect(container.querySelector('button[aria-label="Inbox"]')).not.toBeNull();
+  expect(document.querySelector('[role="menu"][aria-label="Inbox actions"]')).toBeNull();
+  expect(listInboxItems).not.toHaveBeenCalled();
+});
+
 it("reopens known Inbox actions without a disabled loading frame", async () => {
   const inbox = await openInboxMenu();
   expect(button("Mute all projects").disabled).toBe(false);
   act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
   act(() => inbox.dispatchEvent(new KeyboardEvent("keydown", { key: "ContextMenu", bubbles: true })));
   expect(button("Mute all projects").disabled).toBe(false);
+  await act(async () => {});
   expect(document.querySelector('[role="status"]')?.textContent).toContain("2 projects");
+});
+
+it("keeps unread items and the menu open when marking read fails, then allows retry", async () => {
+  const entry = { key: "github:company/work:issue:1", updatedAt: "2026-09-16T10:00:00Z" };
+  seedInboxSeenIfNeeded([{ ...entry, updatedAt: "2026-09-15T10:00:00Z" }]);
+  rememberInboxItems([{ ...entry, projectPath: "/repos/work" }]);
+  const inbox = await openInboxMenu();
+  const write = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+    throw new Error("Storage full");
+  });
+  act(() => button("Mark all as read").click());
+  expect(document.querySelector('[role="alert"]')?.textContent).toContain("Could not save read status");
+  expect(isInboxEntryUnseen(entry)).toBe(true);
+  expect(button("Mark all as read").disabled).toBe(false);
+  write.mockRestore();
+  act(() => button("Mark all as read").click());
+  expect(isInboxEntryUnseen(entry)).toBe(false);
+  expect(document.querySelector('[role="menu"][aria-label="Inbox actions"]')).toBeNull();
+  expect(document.activeElement).toBe(inbox);
+});
+
+it("marks all Inbox providers as read from the rail, including muted projects", async () => {
+  const items: InboxItem[] = (["github", "gitlab", "linear"] as const).map((provider) => ({
+    provider, kind: "issue", repo: "company/work", number: 1,
+    title: "Inbox update", url: `https://${provider}.com/company/work/1`,
+    state: "open", updatedAt: "2026-09-16T10:00:00Z",
+    labels: [], assignees: [], draft: false, projectPath: "/repos/work",
+  }));
+  const entries = items.map((item) => ({ key: inboxItemKey(item), updatedAt: item.updatedAt }));
+  seedInboxSeenIfNeeded(entries.map((entry) => ({ ...entry, updatedAt: "2026-09-15T10:00:00Z" })));
+  updateNotificationPreferences(["local:/repos/work"], { mutedUntil: null });
+  vi.mocked(listInboxItems).mockResolvedValue({ items, errors: {} });
+  rememberInboxItems(items.map((item) => ({
+    key: inboxItemKey(item), updatedAt: item.updatedAt, projectPath: item.projectPath,
+  })));
+  const inbox = await openInboxMenu();
+  expect(entries.every(isInboxEntryUnseen)).toBe(true);
+  await act(async () => button("Mark all as read").click());
+  expect(entries.some(isInboxEntryUnseen)).toBe(false);
+  expect(listInboxItems).not.toHaveBeenCalled();
+  expect(isInboxEntryUnseen({ ...entries[0]!, updatedAt: "2026-09-16T11:00:00Z" })).toBe(true);
+  expect(loadNotificationPreferences()["local:/repos/work"].mutedUntil).toBeNull();
+  expect(document.querySelector('[role="menu"][aria-label="Inbox actions"]')).toBeNull();
+  expect(document.activeElement).toBe(inbox);
+});
+
+it("disables mark all as read for read items and reacts when unread items are read elsewhere", async () => {
+  const item: InboxItem = {
+    provider: "github", kind: "issue", repo: "company/work", number: 1,
+    title: "Inbox update", url: "https://github.com/company/work/issues/1",
+    state: "open", updatedAt: "2026-09-16T10:00:00Z",
+    labels: [], assignees: [], draft: false, projectPath: "/repos/work",
+  };
+  const entry = { key: inboxItemKey(item), updatedAt: item.updatedAt };
+  seedInboxSeenIfNeeded([entry]);
+  rememberInboxItems([{ ...entry, projectPath: item.projectPath }]);
+  vi.mocked(listInboxItems).mockResolvedValue({ items: [item], errors: {} });
+  await openInboxMenu();
+  expect(button("Mark all as read").disabled).toBe(true);
+
+  act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  const updated = { ...item, updatedAt: "2026-09-16T11:00:00Z" };
+  rememberInboxItems([{ ...entry, updatedAt: updated.updatedAt, projectPath: item.projectPath }]);
+  vi.mocked(listInboxItems).mockResolvedValue({ items: [updated], errors: {} });
+  await openInboxMenu();
+  expect(button("Mark all as read").disabled).toBe(false);
+  act(() => markInboxItemsSeen([{ ...entry, updatedAt: updated.updatedAt }]));
+  expect(button("Mark all as read").disabled).toBe(true);
 });
 
 it("mutes all rail and known Inbox projects for one hour directly from Inbox", async () => {
@@ -109,8 +224,8 @@ it("mutes all rail and known Inbox projects for one hour directly from Inbox", a
   const preferences = loadNotificationPreferences();
   expect(Object.keys(preferences).sort()).toEqual([
     "linear:project:planning",
-    "repository:github.com/company/work",
-    "repository:github.com/person/private",
+    "local:/repos/private",
+    "local:/repos/work",
   ]);
   for (const preference of Object.values(preferences)) {
     expect(preference.mutedUntil).toBeGreaterThanOrEqual(start + 3_600_000);
@@ -129,7 +244,7 @@ it("offers explicit all-project actions without an implicit active-project exclu
       name: "company/work",
       detail: "github.com",
       kind: "repository",
-      paths: ["/elsewhere/work-checkout"],
+      paths: [],
     },
   ]);
   updateNotificationPreferences(["repository:github.com/company/work"], {
@@ -145,26 +260,27 @@ it("offers explicit all-project actions without an implicit active-project exclu
       disabled: ["issues"],
       mutedUntil: null,
     },
-    "repository:github.com/person/private": { disabled: [], mutedUntil: null },
+    "local:/repos/private": { disabled: [], mutedUntil: null },
+    "local:/repos/work": { disabled: [], mutedUntil: null },
   });
 });
 
 it("resumes muted projects without changing category choices or unmuted projects", async () => {
-  updateNotificationPreferences(["repository:github.com/company/work"], {
+  updateNotificationPreferences(["local:/repos/work"], {
     disabled: ["issues"],
     mutedUntil: null,
   });
-  updateNotificationPreferences(["repository:github.com/person/private"], {
+  updateNotificationPreferences(["local:/repos/private"], {
     disabled: ["agentFinished"],
   });
   await openInboxMenu();
   act(() => button("Resume muted projects").click());
   expect(loadNotificationPreferences()).toEqual({
-    "repository:github.com/company/work": {
+    "local:/repos/work": {
       disabled: ["issues"],
       resumedAt: expect.any(Number),
     },
-    "repository:github.com/person/private": { disabled: ["agentFinished"] },
+    "local:/repos/private": { disabled: ["agentFinished"] },
   });
   await openInboxMenu();
   expect(button("Resume muted projects").disabled).toBe(true);
@@ -189,11 +305,11 @@ it("opens custom timing from the duration submenu for all projects", async () =>
   });
   act(() => button("Mute until then").click());
   expect(loadNotificationPreferences()).toEqual({
-    "repository:github.com/company/work": {
+    "local:/repos/work": {
       disabled: [],
       mutedUntil: new Date(2030, 0, 16, 12).getTime(),
     },
-    "repository:github.com/person/private": {
+    "local:/repos/private": {
       disabled: [],
       mutedUntil: new Date(2030, 0, 16, 12).getTime(),
     },
@@ -223,46 +339,23 @@ it("keeps the menu open and reports failed persistence so the action can be retr
   ).toBeNull();
 });
 
-it("keeps healthy projects actionable when a stale rail path is unavailable", async () => {
-  vi.mocked(invoke).mockImplementation(async (command, args) => {
-    const cwd = (args as { cwd: string }).cwd;
-    if (command === "git_notification_context" && cwd === "/repos/private") {
-      throw new Error("Directory missing");
-    }
-    return {
-      root: cwd,
-      commonDir: null,
-      remote: "https://github.com/company/work.git",
-    };
-  });
-
+it("keeps every rail path actionable without checking the filesystem", async () => {
+  vi.mocked(invoke).mockRejectedValue(new Error("Native bridge unavailable"));
   await openInboxMenu();
-
-  await vi.waitFor(() =>
-    expect(button("Mute all projects").disabled).toBe(false),
-  );
-  expect(document.body.textContent).not.toContain("unavailable project");
+  expect(button("Mute all projects").disabled).toBe(false);
+  expect(document.body.textContent).not.toContain("unavailable");
   expect(document.querySelector('[role="alert"]')).toBeNull();
-  expect(button("Retry loading projects")).toBeDefined();
+  expect(document.body.textContent).not.toContain("Retry loading projects");
 
   act(() => button("Mute all projects").click());
   act(() => button("Until resumed").click());
   expect(loadNotificationPreferences()).toEqual({
-    "repository:github.com/company/work": { disabled: [], mutedUntil: null },
+    "local:/repos/private": { disabled: [], mutedUntil: null },
+    "local:/repos/work": { disabled: [], mutedUntil: null },
   });
-});
-
-it("disables bulk actions on unresolved projects and allows retrying discovery", async () => {
-  const resolve = vi.mocked(invoke).getMockImplementation()!;
-  vi.mocked(invoke).mockResolvedValue(null);
-  await openInboxMenu();
-  expect(button("Mute all projects").disabled).toBe(true);
-  expect(button("Resume muted projects").disabled).toBe(true);
-  expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-    "Could not load projects",
-  );
-  vi.mocked(invoke).mockImplementation(resolve);
-  await act(async () => button("Retry loading projects").click());
-  expect(button("Mute all projects").disabled).toBe(false);
-  expect(document.querySelector('[role="alert"]')).toBeNull();
+  expect(
+    vi.mocked(invoke).mock.calls.some(([command]) =>
+      command === "git_notification_context"
+    ),
+  ).toBe(false);
 });

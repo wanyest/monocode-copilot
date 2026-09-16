@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, ChevronRight, Folder, Minus } from "../chrome/icons";
 import { NotificationMuteControl } from "../chrome/NotificationMuteControl";
 import { SecondaryButton } from "../chrome/SecondaryButton";
@@ -23,11 +23,6 @@ import {
   resolveTabGroupLogo,
   resolveTabGroupMascot,
 } from "../lib/tabGroups";
-import { loadSoundsEnabled, SOUNDS_CHANGE_EVENT } from "../lib/sounds";
-import {
-  loadNotificationsEnabled,
-  NOTIFICATIONS_CHANGE_EVENT,
-} from "../lib/notifications";
 import type { RecentProject } from "../lib/recents";
 
 type Props = {
@@ -45,12 +40,12 @@ export function ProjectNotificationSettings({
   notificationSettingsRequest = 0,
   highlighted = false,
 }: Props) {
-  const discovery = useNotificationProjects([
+  const notificationProjects = useNotificationProjects([
     cwd,
     notificationProjectPath ?? "",
     ...recents.map((project) => project.path),
   ]);
-  const projects = [...discovery.projects].sort((a, b) =>
+  const projects = [...notificationProjects.projects].sort((a, b) =>
     a.name.localeCompare(b.name),
   );
   const preferences = useProjectNotificationPreferences();
@@ -59,22 +54,11 @@ export function ProjectNotificationSettings({
   const groupCustomColors = loadTabGroupCustomColors();
   const groupMascots = loadTabGroupMascots();
   const [error, setError] = useState<string | null>(null);
-  const loading = discovery.loading;
   const [selected, setSelected] = useState<string[]>([]);
   const [selecting, setSelecting] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const selectedIds = selected.filter((id) =>
     projects.some((project) => project.id === id),
-  );
-  const soundsEnabled = useSyncExternalStore(
-    subscribeChannels,
-    loadSoundsEnabled,
-    loadSoundsEnabled,
-  );
-  const desktopEnabled = useSyncExternalStore(
-    subscribeChannels,
-    loadNotificationsEnabled,
-    loadNotificationsEnabled,
   );
   const targetCard = useRef<HTMLFieldSetElement>(null);
   const focusedRequest = useRef<{ path: string; request: number } | null>(null);
@@ -160,24 +144,9 @@ export function ProjectNotificationSettings({
           highlighted ? "border-accent/60" : "border-content/10"
         }`}
       >
-        {!soundsEnabled || !desktopEnabled ? (
-          <div
-            role="status"
-            className="border-b border-content/5 px-4 py-3.5 text-[12px] leading-relaxed text-content/45"
-          >
-            {!soundsEnabled ? <p>Sounds are off globally.</p> : null}
-            {!desktopEnabled ? (
-              <p>Desktop notifications are off globally.</p>
-            ) : null}
-            <p>
-              Enable them in General to receive the notifications you choose
-              here.
-            </p>
-          </div>
-        ) : null}
-        {error || discovery.error ? (
+        {error ? (
           <p role="alert" className="px-4 py-3.5 text-[12px] text-red-400">
-            {error ?? discovery.error}
+            {error}
           </p>
         ) : null}
         {projects.length === 0 ? (
@@ -185,9 +154,7 @@ export function ProjectNotificationSettings({
             role="status"
             className="px-4 py-3.5 text-[12px] leading-relaxed text-content/45"
           >
-            {loading
-              ? "Loading projects…"
-              : "Open a project or connect an Inbox provider to configure its notifications."}
+            Open a project or connect an Inbox provider to configure its notifications.
           </p>
         ) : null}
         {projects.length ? (
@@ -409,17 +376,6 @@ export function ProjectNotificationSettings({
       </div>
     </section>
   );
-}
-
-function subscribeChannels(listener: () => void) {
-  window.addEventListener(SOUNDS_CHANGE_EVENT, listener);
-  window.addEventListener(NOTIFICATIONS_CHANGE_EVENT, listener);
-  window.addEventListener("storage", listener);
-  return () => {
-    window.removeEventListener(SOUNDS_CHANGE_EVENT, listener);
-    window.removeEventListener(NOTIFICATIONS_CHANGE_EVENT, listener);
-    window.removeEventListener("storage", listener);
-  };
 }
 
 function ProjectSelection({

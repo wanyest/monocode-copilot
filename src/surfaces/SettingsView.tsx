@@ -329,7 +329,7 @@ export function SettingsView({
       className="flex min-h-0 min-w-0 flex-1 flex-col text-content"
     >
       <div
-        className="flex h-10 shrink-0 select-none items-center border-b border-content/10"
+        className="flex h-10 shrink-0 select-none items-center border-b border-stroke"
         data-tauri-drag-region="deep"
       >
         {IS_MAC && !besideRail ? <div className="w-[78px] shrink-0" /> : null}
@@ -524,7 +524,7 @@ function SettingsSearch({
                 onClick={() => go(result)}
                 className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] ${
                   index === active
-                    ? "bg-content/10 text-content"
+                    ? "bg-selection text-content"
                     : "text-content hover:bg-content/5"
                 }`}
               >
@@ -1865,7 +1865,7 @@ function KeybindingsPage() {
         </div>
       }
     >
-      <div className="flex items-center border-b border-content/10 bg-content/5 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-content/40">
+      <div className="flex items-center border-b border-stroke bg-content/5 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-content/40">
         <span className="min-w-0 flex-1">Command</span>
         <span className="w-40 shrink-0">Keybinding</span>
         <span className="w-28 shrink-0">When</span>
@@ -2366,7 +2366,7 @@ function Segmented<T extends string>({
           onClick={() => onChange(option.value)}
           className={`min-w-0 rounded-[5px] px-2.5 py-1 ${
             value === option.value
-              ? "bg-content/10 text-content"
+              ? "bg-selection text-content"
               : "text-content/50 hover:text-content"
           }`}
         >
@@ -2676,7 +2676,7 @@ function Select({
                 onClick={() => pick(option.value)}
                 className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] ${
                   highlighted || isSelected
-                    ? "bg-content/10 text-content"
+                    ? "bg-selection text-content"
                     : "text-content hover:bg-content/5"
                 }`}
               >

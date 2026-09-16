@@ -7,8 +7,6 @@ import {
   updateNotificationPreferences,
 } from "../lib/notificationPreferences";
 import { rememberNotificationProjects } from "../lib/notificationProjects";
-import { saveNotificationsEnabled } from "../lib/notifications";
-import { saveSoundsEnabled } from "../lib/sounds";
 import { ProjectNotificationSettings } from "./ProjectNotificationSettings";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -32,14 +30,14 @@ beforeEach(() => {
       name: "me/private",
       detail: "github.com",
       kind: "repository",
-      paths: ["/private"],
+      paths: [],
     },
     {
       id: "repository:github.com/work/app",
       name: "work/app",
       detail: "github.com",
       kind: "repository",
-      paths: ["/work"],
+      paths: [],
     },
   ]);
   container = document.createElement("div");
@@ -136,7 +134,7 @@ it("keeps local projects while offering only local notification categories", asy
     },
   ]);
   await act(async () =>
-    root.render(createElement(ProjectNotificationSettings, { cwd: "" })),
+    root.render(createElement(ProjectNotificationSettings, { cwd: "/fun" })),
   );
 
   const local = categoriesButton("fun");
@@ -220,26 +218,6 @@ it("keeps projects collapsed until opened and preserves choices when switching p
   expect(workPanel.hidden).toBe(true);
 });
 
-it("explains globally disabled channels and updates when they are enabled", async () => {
-  saveSoundsEnabled(false);
-  saveNotificationsEnabled(false);
-  await act(async () =>
-    root.render(createElement(ProjectNotificationSettings, { cwd: "" })),
-  );
-  expect(container.textContent).toContain("Sounds are off globally.");
-  expect(container.textContent).toContain(
-    "Desktop notifications are off globally.",
-  );
-  act(() => {
-    saveSoundsEnabled(true);
-    saveNotificationsEnabled(true);
-  });
-  expect(container.textContent).not.toContain("Sounds are off globally.");
-  expect(container.textContent).not.toContain(
-    "Desktop notifications are off globally.",
-  );
-});
-
 it("mutes several selected projects without changing another project's notifications", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-14T08:00:00Z"));
@@ -249,7 +227,7 @@ it("mutes several selected projects without changing another project's notificat
       name: "me/other",
       detail: "github.com",
       kind: "repository",
-      paths: ["/other"],
+      paths: [],
     },
   ]);
   await act(async () =>

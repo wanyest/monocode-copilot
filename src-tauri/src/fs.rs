@@ -895,99 +895,6 @@ fn git_github_status_for() -> GitHubStatus {
     }
 }
 
-/// Repository identity shared by notification sources and local project folders.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NotificationProjectContext {
-    root: String,
-    common_dir: Option<String>,
-    remote: Option<String>,
-}
-
-/// Local Git metadata only: works offline and never asks a provider for credentials.
-#[tauri::command]
-pub async fn git_notification_context(cwd: String) -> Result<NotificationProjectContext, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let directory = expand_home(&cwd);
-        std::fs::read_dir(&directory).map_err(|error| error.to_string())?;
-        let discovery = git_cmd()
-            .arg("-C")
-            .arg(&directory)
-            .args(["rev-parse", "--show-toplevel"])
-            .env("LC_ALL", "C")
-            .output()
-            .map_err(|error| error.to_string())?;
-        if !discovery.status.success() {
-            let error = String::from_utf8_lossy(&discovery.stderr)
-                .trim()
-                .to_string();
-            if !error.starts_with("fatal: not a git repository") {
-                return Err(error);
-            }
-            // Git also reports "not a repository" for damaged metadata. Only
-            // accept a local folder when no ancestor contains a .git entry.
-            let canonical = directory
-                .canonicalize()
-                .map_err(|error| error.to_string())?;
-            for ancestor in canonical.ancestors() {
-                match std::fs::symlink_metadata(ancestor.join(".git")) {
-                    Ok(_) => return Err(error),
-                    Err(error) if error.kind() == ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.to_string()),
-                }
-            }
-            return Ok(NotificationProjectContext {
-                root: path_to_js(&directory),
-                common_dir: None,
-                remote: None,
-            });
-        }
-        let root = String::from_utf8_lossy(&discovery.stdout)
-            .trim()
-            .to_string();
-        let common_dir = notification_git_stdout(
-            &directory,
-            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        )?;
-        if root.is_empty() || common_dir.is_empty() {
-            return Err("Git returned an empty notification project identity".into());
-        }
-        let config = notification_git_stdout(&directory, &["config", "--list", "--name-only"])?;
-        let resolved = config.lines().find_map(|key| {
-            key.strip_prefix("remote.")?
-                .strip_suffix(".gh-resolved")
-                .filter(|name| !name.is_empty())
-        });
-        let remotes = notification_git_stdout(&directory, &["remote"])?;
-        let name = resolved
-            .or_else(|| remotes.lines().find(|name| *name == "origin"))
-            .or_else(|| remotes.lines().find(|name| !name.is_empty()));
-        let remote = name
-            .map(|name| notification_git_stdout(&directory, &["remote", "get-url", name]))
-            .transpose()?;
-        Ok(NotificationProjectContext {
-            root: path_to_js(Path::new(&root)),
-            common_dir: Some(path_to_js(Path::new(&common_dir))),
-            remote,
-        })
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
-fn notification_git_stdout(directory: &Path, args: &[&str]) -> Result<String, String> {
-    let output = git_cmd()
-        .arg("-C")
-        .arg(directory)
-        .args(args)
-        .output()
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 /// `owner/repo` for the GitHub remote of this working copy, via `gh`.
 #[tauri::command]
 pub async fn git_github_repo(cwd: String) -> Result<String, String> {
@@ -996,10 +903,19 @@ pub async fn git_github_repo(cwd: String) -> Result<String, String> {
         .map_err(|e| e.to_string())?
 }
 
-/// Open issues or pull requests for the current GitHub remote, via `gh`.
+/// The GitHub remote of this working copy and, when it is a fork, its parent.
+#[tauri::command]
+pub async fn git_github_repositories(cwd: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || git_github_repositories_for(&expand_home(&cwd)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Open issues or pull requests for one GitHub repository, via `gh`.
 #[tauri::command]
 pub async fn git_github_work_items(
     cwd: String,
+    repo: String,
     kind: String,
     assigned_to_me: bool,
     state: String,
@@ -1009,6 +925,7 @@ pub async fn git_github_work_items(
     tauri::async_runtime::spawn_blocking(move || {
         git_github_work_items_for(
             &expand_home(&cwd),
+            &repo,
             &kind,
             assigned_to_me,
             &state,
@@ -1051,11 +968,12 @@ pub struct GitHubWorkItemDetails {
 #[tauri::command]
 pub async fn git_github_work_item_details(
     cwd: String,
+    repo: String,
     kind: String,
     number: i64,
 ) -> Result<GitHubWorkItemDetails, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        git_github_work_item_details_for(&expand_home(&cwd), &kind, number)
+        git_github_work_item_details_for(&expand_home(&cwd), &repo, &kind, number)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1104,11 +1022,12 @@ pub struct GitHubWorkItemThread {
 #[tauri::command]
 pub async fn git_github_work_item_thread(
     cwd: String,
+    repo: String,
     kind: String,
     number: i64,
 ) -> Result<GitHubWorkItemThread, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        git_github_work_item_thread_for(&expand_home(&cwd), &kind, number)
+        git_github_work_item_thread_for(&expand_home(&cwd), &repo, &kind, number)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1118,13 +1037,36 @@ pub async fn git_github_work_item_thread(
 #[tauri::command]
 pub async fn git_github_work_item_comment(
     cwd: String,
+    repo: String,
     kind: String,
     number: i64,
     body: String,
     in_reply_to: String,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        git_github_work_item_comment_for(&expand_home(&cwd), &kind, number, &body, &in_reply_to)
+        git_github_work_item_comment_for(
+            &expand_home(&cwd),
+            &repo,
+            &kind,
+            number,
+            &body,
+            &in_reply_to,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Merge or change the lifecycle state of a GitHub pull request via `gh`.
+#[tauri::command]
+pub async fn git_github_pr_action(
+    cwd: String,
+    repo: String,
+    number: i64,
+    action: String,
+) -> Result<GitHubWorkItem, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git_github_pr_action_for(&expand_home(&cwd), &repo, number, &action)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1155,12 +1097,13 @@ const MAX_PR_DIFF_BYTES: usize = 2 * 1024 * 1024;
 #[tauri::command]
 pub async fn git_github_pr_diff(
     cwd: String,
+    repo: String,
     number: i64,
     full_context: Option<bool>,
 ) -> Result<GitHubPrDiff, String> {
     let full_context = full_context.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
-        git_github_pr_diff_for(&expand_home(&cwd), number, full_context)
+        git_github_pr_diff_for(&expand_home(&cwd), &repo, number, full_context)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2085,8 +2028,46 @@ fn git_github_repo_for(root: &Path) -> Result<String, String> {
     Ok(slug.to_string())
 }
 
+fn git_github_repositories_for(root: &Path) -> Result<Vec<String>, String> {
+    let json = gh_checked(root, &["repo", "view", "--json", "nameWithOwner,parent"])?;
+    parse_github_repositories(&json)
+}
+
+fn parse_github_repositories(json: &str) -> Result<Vec<String>, String> {
+    #[derive(Deserialize)]
+    struct Owner {
+        login: String,
+    }
+    #[derive(Deserialize)]
+    struct Parent {
+        name: String,
+        owner: Owner,
+    }
+    #[derive(Deserialize)]
+    struct View {
+        #[serde(rename = "nameWithOwner")]
+        name_with_owner: String,
+        #[serde(default)]
+        parent: Option<Parent>,
+    }
+
+    let view: View = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    let (owner, name) = split_github_repo(&view.name_with_owner)?;
+    let mut repos = vec![format!("{owner}/{name}")];
+    if let Some(parent) = view.parent {
+        let parent = format!("{}/{}", parent.owner.login, parent.name);
+        let (owner, name) = split_github_repo(&parent)?;
+        let parent = format!("{owner}/{name}");
+        if !repos[0].eq_ignore_ascii_case(&parent) {
+            repos.push(parent);
+        }
+    }
+    Ok(repos)
+}
+
 fn git_github_work_items_for(
     root: &Path,
+    repo: &str,
     kind: &str,
     assigned_to_me: bool,
     state: &str,
@@ -2097,6 +2078,8 @@ fn git_github_work_items_for(
     if kind != "issue" && kind != "pr" {
         return Err("Unknown GitHub task kind".into());
     }
+    let (owner, name) = split_github_repo(repo)?;
+    let repo = format!("{owner}/{name}");
     let state = if state.trim().eq_ignore_ascii_case("all") {
         "all"
     } else {
@@ -2115,6 +2098,8 @@ fn git_github_work_items_for(
         state.into(),
         "--limit".into(),
         limit,
+        "--repo".into(),
+        repo.clone(),
         "--json".into(),
         fields.into(),
     ];
@@ -2129,7 +2114,6 @@ fn git_github_work_items_for(
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let json = gh_checked(root, &refs)?;
-    let repo = git_github_repo_for(root).unwrap_or_default();
     parse_github_work_items(&json, kind, &repo)
 }
 
@@ -2161,8 +2145,43 @@ fn git_github_work_item_for(
     parse_github_work_item(&json, kind, &repo)
 }
 
+fn github_pr_action_args(repo: &str, number: i64, action: &str) -> Result<Vec<String>, String> {
+    if number <= 0 {
+        return Err("GitHub pull request number must be positive".into());
+    }
+    let (owner, name) = split_github_repo(repo)?;
+    let repo = format!("{owner}/{name}");
+    let number = number.to_string();
+    let args = match action.trim() {
+        "merge" => vec!["pr", "merge", &number, "--repo", &repo, "--merge"],
+        "squash" => vec!["pr", "merge", &number, "--repo", &repo, "--squash"],
+        "rebase" => vec!["pr", "merge", &number, "--repo", &repo, "--rebase"],
+        "draft" => vec!["pr", "ready", &number, "--repo", &repo, "--undo"],
+        "ready" => vec!["pr", "ready", &number, "--repo", &repo],
+        "close" => vec!["pr", "close", &number, "--repo", &repo],
+        "reopen" => vec!["pr", "reopen", &number, "--repo", &repo],
+        _ => return Err("Unknown GitHub pull request action".into()),
+    };
+    Ok(args.into_iter().map(str::to_string).collect())
+}
+
+fn git_github_pr_action_for(
+    root: &Path,
+    repo: &str,
+    number: i64,
+    action: &str,
+) -> Result<GitHubWorkItem, String> {
+    let args = github_pr_action_args(repo, number, action)?;
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    // Successful mutation commands do not always write to stdout. Their exit
+    // status confirms the action ran; the follow-up view fetches the new state.
+    gh_run(root, &refs, true)?;
+    git_github_work_item_for(root, repo, "pr", number)
+}
+
 fn git_github_work_item_details_for(
     root: &Path,
+    repo: &str,
     kind: &str,
     number: i64,
 ) -> Result<GitHubWorkItemDetails, String> {
@@ -2170,13 +2189,21 @@ fn git_github_work_item_details_for(
     if kind != "issue" && kind != "pr" {
         return Err("Unknown GitHub task kind".into());
     }
+    if number <= 0 {
+        return Err("Invalid GitHub item number".into());
+    }
+    let (owner, name) = split_github_repo(repo)?;
+    let repo = format!("{owner}/{name}");
     let number = number.to_string();
     let fields = if kind == "pr" {
         "body,author,baseRefName,headRefName,reviewDecision"
     } else {
         "body,author"
     };
-    let json = gh_checked(root, &[kind, "view", &number, "--json", fields])?;
+    let json = gh_checked(
+        root,
+        &[kind, "view", &number, "--repo", &repo, "--json", fields],
+    )?;
     parse_github_work_item_details(&json)
 }
 
@@ -2317,6 +2344,7 @@ mutation InboxReviewReply($threadId: ID!, $body: String!) {
 
 fn git_github_work_item_thread_for(
     root: &Path,
+    repo: &str,
     kind: &str,
     number: i64,
 ) -> Result<GitHubWorkItemThread, String> {
@@ -2327,8 +2355,7 @@ fn git_github_work_item_thread_for(
     if number <= 0 {
         return Err("Invalid GitHub item number".into());
     }
-    let repo = git_github_repo_for(root)?;
-    let (owner, name) = split_github_repo(&repo)?;
+    let (owner, name) = split_github_repo(repo)?;
     let query = if kind == "pr" {
         GITHUB_PR_THREAD_QUERY
     } else {
@@ -2376,19 +2403,33 @@ fn github_comment_input<'a>(
 
 fn git_github_work_item_comment_for(
     root: &Path,
+    repo: &str,
     kind: &str,
     number: i64,
     body: &str,
     in_reply_to: &str,
 ) -> Result<String, String> {
     let (kind, body) = github_comment_input(kind, number, body)?;
+    let (owner, name) = split_github_repo(repo)?;
+    let repo = format!("{owner}/{name}");
     let reply = in_reply_to.trim();
     if !reply.is_empty() {
         return git_github_review_reply_for(root, reply, body);
     }
     let number = number.to_string();
     with_temp_markdown(body, |path| {
-        let output = gh_checked(root, &[kind, "comment", &number, "--body-file", path])?;
+        let output = gh_checked(
+            root,
+            &[
+                kind,
+                "comment",
+                &number,
+                "--repo",
+                &repo,
+                "--body-file",
+                path,
+            ],
+        )?;
         github_url_from_output(&output, "GitHub did not return a comment URL")
     })
 }
@@ -2884,25 +2925,35 @@ const PR_FULL_CONTEXT_LINES: &str = "999999";
 
 fn git_github_pr_diff_for(
     root: &Path,
+    repo: &str,
     number: i64,
     full_context: bool,
 ) -> Result<GitHubPrDiff, String> {
     if number <= 0 {
         return Err("Invalid pull request number".into());
     }
+    let (owner, name) = split_github_repo(repo)?;
+    let repo = format!("{owner}/{name}");
     let number = number.to_string();
     let fields = if full_context {
         "files,additions,deletions,baseRefOid,headRefOid"
     } else {
         "files,additions,deletions"
     };
-    let json = gh_run(root, &["pr", "view", &number, "--json", fields], false)?;
+    let json = gh_run(
+        root,
+        &["pr", "view", &number, "--repo", &repo, "--json", fields],
+        false,
+    )?;
     let mut diff = parse_github_pr_diff_meta(&json)?;
     let (patch, truncated) = if full_context {
         let (base, head) = parse_github_pr_oids(&json)?;
         git_diff_full_context(root, &base, &head)?
     } else {
-        (gh_run(root, &["pr", "diff", &number], true)?, false)
+        (
+            gh_run(root, &["pr", "diff", &number, "--repo", &repo], true)?,
+            false,
+        )
     };
     if truncated || patch.len() > MAX_PR_DIFF_BYTES {
         diff.truncated = true;
@@ -3257,6 +3308,7 @@ fn gh_run(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, Strin
     cmd.current_dir(root)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GH_PROMPT_DISABLED", "1")
         .env("GH_PAGER", "cat")
         .env("GIT_PAGER", "cat");
     crate::harness::apply_gui_env(&mut cmd);
@@ -5153,114 +5205,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn git_notification_context_rejects_unavailable_project_directory() {
-        let dir = tmp("notification-unavailable");
-        let missing = dir.0.join("missing");
-        assert!(tauri::async_runtime::block_on(git_notification_context(
-            missing.to_string_lossy().into_owned(),
-        ))
-        .is_err());
-    }
-
-    #[test]
-    fn git_notification_context_rejects_broken_git_metadata() {
-        let mut accepted = Vec::new();
-        for damage in ["missing-head", "corrupt-config", "broken-gitfile"] {
-            let dir = tmp("notification-broken-git");
-            assert!(init_git(
-                &dir.0,
-                "main",
-                Some("https://offline.invalid/acme/widget.git")
-            ));
-            match damage {
-                "missing-head" => std::fs::remove_file(dir.0.join(".git/HEAD")).unwrap(),
-                "corrupt-config" => {
-                    std::fs::write(dir.0.join(".git/config"), "[invalid\n").unwrap()
-                }
-                "broken-gitfile" => {
-                    std::fs::rename(dir.0.join(".git"), dir.0.join("saved-git")).unwrap();
-                    std::fs::write(dir.0.join(".git"), "gitdir: missing-metadata\n").unwrap();
-                }
-                _ => unreachable!(),
-            }
-            let nested = dir.0.join("nested");
-            std::fs::create_dir(&nested).unwrap();
-            if tauri::async_runtime::block_on(git_notification_context(
-                nested.to_string_lossy().into_owned(),
-            ))
-            .is_ok()
-            {
-                accepted.push(damage);
-            }
-        }
-        assert!(
-            accepted.is_empty(),
-            "Accepted broken metadata: {accepted:?}"
-        );
-    }
-
-    #[test]
-    fn git_notification_context_resolves_local_project_identity() {
-        let dir = tmp("notification-context");
-        let context = tauri::async_runtime::block_on(git_notification_context(
-            dir.0.to_string_lossy().into_owned(),
-        ))
-        .unwrap();
-        assert_eq!(context.root, path_to_js(&dir.0));
-        assert!(context.common_dir.is_none());
-        assert!(context.remote.is_none());
-
-        assert!(init_git_commit(&dir.0, &[("readme.md", "hello\n")]));
-        let checkout = dir.0.join("linked checkout");
-        assert!(git(
-            &dir.0,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "feature",
-                checkout.to_str().unwrap()
-            ],
-        ));
-        let main = tauri::async_runtime::block_on(git_notification_context(
-            dir.0.to_string_lossy().into_owned(),
-        ))
-        .unwrap();
-        let linked = tauri::async_runtime::block_on(git_notification_context(
-            checkout.to_string_lossy().into_owned(),
-        ))
-        .unwrap();
-        assert_ne!(main.root, linked.root);
-        assert!(main.common_dir.is_some());
-        assert_eq!(main.common_dir, linked.common_dir);
-        assert!(linked.remote.is_none());
-
-        let remote = "ssh://git@offline.invalid/acme/widget.git";
-        assert!(git(&dir.0, &["remote", "add", "origin", remote]));
-        let nested = checkout.join("nested folder");
-        std::fs::create_dir(&nested).unwrap();
-        let context = tauri::async_runtime::block_on(git_notification_context(
-            nested.to_string_lossy().into_owned(),
-        ))
-        .unwrap();
-        assert_eq!(context.root, linked.root);
-        assert_eq!(context.common_dir, main.common_dir);
-        assert_eq!(context.remote.as_deref(), Some(remote));
-
-        let upstream = "https://offline.invalid/team/widget.git";
-        assert!(git(&dir.0, &["remote", "add", "upstream", upstream]));
-        assert!(git(
-            &dir.0,
-            &["config", "remote.upstream.gh-resolved", "base"],
-        ));
-        let context = tauri::async_runtime::block_on(git_notification_context(
-            nested.to_string_lossy().into_owned(),
-        ))
-        .unwrap();
-        assert_eq!(context.remote.as_deref(), Some(upstream));
-    }
-
     fn git(dir: &Path, args: &[&str]) -> bool {
         Command::new("git")
             .args([
@@ -5995,6 +5939,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_github_repositories_includes_a_forks_parent() {
+        let json = r#"{
+            "nameWithOwner": "EricRasputin/monocode-eric",
+            "parent": {
+                "name": "monocode",
+                "owner": { "login": "hardbeat920" }
+            }
+        }"#;
+        assert_eq!(
+            parse_github_repositories(json).unwrap(),
+            vec!["EricRasputin/monocode-eric", "hardbeat920/monocode"]
+        );
+    }
+
+    #[test]
+    fn parse_github_repositories_keeps_a_normal_repo_single() {
+        let json = r#"{
+            "nameWithOwner": "hardbeat920/monocode",
+            "parent": null
+        }"#;
+        assert_eq!(
+            parse_github_repositories(json).unwrap(),
+            vec!["hardbeat920/monocode"]
+        );
+    }
+
+    #[test]
     fn parse_github_work_items_maps_issue_fields() {
         let json = r#"[{
             "number": 5138,
@@ -6116,6 +6087,25 @@ mod tests {
         );
         assert!(split_github_repo("monocode").is_err());
         assert!(split_github_repo("acme/web extra").is_err());
+    }
+
+    #[test]
+    fn github_pr_actions_map_to_non_interactive_gh_commands() {
+        assert_eq!(
+            github_pr_action_args("acme/web", 42, "squash").unwrap(),
+            ["pr", "merge", "42", "--repo", "acme/web", "--squash"]
+        );
+        assert_eq!(
+            github_pr_action_args("acme/web", 42, "draft").unwrap(),
+            ["pr", "ready", "42", "--repo", "acme/web", "--undo"]
+        );
+        assert_eq!(
+            github_pr_action_args("acme/web", 42, "reopen").unwrap(),
+            ["pr", "reopen", "42", "--repo", "acme/web"]
+        );
+        assert!(github_pr_action_args("acme/web", 42, "delete").is_err());
+        assert!(github_pr_action_args("acme/web", 0, "merge").is_err());
+        assert!(github_pr_action_args("invalid", 42, "merge").is_err());
     }
 
     #[test]
