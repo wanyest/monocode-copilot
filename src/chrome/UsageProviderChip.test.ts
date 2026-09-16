@@ -4,7 +4,9 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderRateLimits } from "../lib/rateLimits";
-import { UsageProviderChip } from "./UsageProviderChip";
+import { projectKey } from "../lib/paths";
+import { saveTabGroupMascot } from "../lib/tabGroups";
+import { needsProviderLogin, UsageProviderChip } from "./UsageProviderChip";
 
 const now = Date.parse("2026-09-16T12:00:00Z");
 
@@ -63,6 +65,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  localStorage.clear();
   vi.unstubAllGlobals();
 });
 
@@ -77,6 +80,44 @@ function button(label: string): HTMLButtonElement {
 }
 
 describe("UsageProviderChip", () => {
+  it("offers the provider-owned login flow for an expired Claude session", async () => {
+    const limits: ProviderRateLimits = {
+      provider: "claude",
+      session: null,
+      weekly: null,
+      resetCredits: null,
+      updatedAt: now,
+      error: "Claude sign-in expired",
+      status: "error",
+    };
+    const onReconnect = vi.fn(async () => undefined);
+    act(() =>
+      root.render(
+        createElement(UsageProviderChip, { limits, now, onReconnect }),
+      ),
+    );
+
+    await act(async () => button("Claude Code usage details").click());
+    expect(document.querySelector(".size-9")).not.toBeNull();
+    await act(async () => button("Sign in to Claude Code").click());
+
+    expect(onReconnect).toHaveBeenCalledOnce();
+    expect(document.body.textContent).toContain("Signed in to Claude Code");
+  });
+
+  it("does not describe account-specific usage restrictions as login failures", () => {
+    const limits: ProviderRateLimits = {
+      provider: "claude",
+      session: null,
+      weekly: null,
+      resetCredits: null,
+      updatedAt: now,
+      error: "Claude usage is unavailable for this account",
+      status: "error",
+    };
+    expect(needsProviderLogin(limits)).toBe(false);
+  });
+
   it("opens a column of detailed progress bars", async () => {
     act(() =>
       root.render(
@@ -116,6 +157,9 @@ describe("UsageProviderChip", () => {
 
     await act(async () => button("Codex usage details").click());
     expect(document.body.textContent).toContain("2 resets available");
+    expect(
+      document.querySelector('[data-reset-mascot-mood="happy"]'),
+    ).not.toBeNull();
     expect(document.body.textContent).toContain("Referral reward");
     expect(document.body.textContent).toContain("Backup reset");
     expect(document.body.textContent).toContain("Expires in 12d");
@@ -134,6 +178,21 @@ describe("UsageProviderChip", () => {
 
     expect(onConsumeReset).toHaveBeenCalledWith("reset-2");
     expect(document.body.textContent).toContain("Codex usage was reset.");
+  });
+
+  it("uses the project's picked mascot and gives an empty bank a sad pose", async () => {
+    const project = "/repo/mascot-lab";
+    saveTabGroupMascot(projectKey(project), "cat");
+    const limits = codexLimits();
+    limits.resetCredits = { availableCount: 0, credits: [] };
+    act(() =>
+      root.render(createElement(UsageProviderChip, { limits, now, project })),
+    );
+
+    await act(async () => button("Codex usage details").click());
+    const mascot = document.querySelector('[data-reset-mascot-mood="sad"]');
+    expect(mascot?.getAttribute("data-mascot-name")).toBe("cat");
+    expect(document.body.textContent).toContain("No resets available");
   });
 
   it("keeps aggregate-only resets visible as claimable rows", async () => {

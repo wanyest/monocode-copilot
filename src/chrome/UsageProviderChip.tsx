@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   clampUsedPercent,
   formatRateLimitWindowChipLabel,
@@ -12,10 +12,23 @@ import {
   type RateLimitWindow,
 } from "../lib/rateLimits";
 import type { CodexRateLimitResetOutcome } from "../lib/rateLimitsFetch";
+import { mascotPath, projectMascot } from "../lib/projectMascots";
+import { projectKey, projectName } from "../lib/paths";
 import { HARNESS_TITLE } from "../lib/session";
+import {
+  loadTabGroupColors,
+  loadTabGroupCustomColors,
+  loadTabGroupMascots,
+  resolveTabGroupColor,
+  resolveTabGroupMascot,
+} from "../lib/tabGroups";
 import { HarnessIcon } from "./HarnessIcon";
 import { RefreshCw } from "./icons";
 import { Popover, type PopoverDismissReason } from "./Popover";
+import {
+  ProviderSignInPanel,
+  type ProviderSignInState,
+} from "./ProviderSignInPanel";
 
 type UsageWindowEntry = {
   key: "session" | "weekly";
@@ -28,22 +41,34 @@ type ResetActionState =
 export function UsageProviderChip({
   limits,
   now,
+  project,
   onConsumeReset,
+  onReconnect,
 }: {
   limits: ProviderRateLimits;
   now: number;
+  project?: string;
   onConsumeReset?: (creditId?: string) => Promise<CodexRateLimitResetOutcome>;
+  onReconnect?: () => Promise<void>;
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [resetAction, setResetAction] = useState<ResetActionState>("idle");
   const [activeResetKey, setActiveResetKey] = useState<string | null>(null);
   const [resetError, setResetError] = useState<string | null>(null);
+  const [reconnectState, setReconnectState] =
+    useState<ProviderSignInState>("idle");
+  const [reconnectError, setReconnectError] = useState<string | null>(null);
   const loading =
     limits.status === "idle" ||
     (limits.status === "fetching" && !limits.session && !limits.weekly);
   const disconnected = limits.status === "unavailable";
   const windows = usageWindows(limits);
+  const loginView = Boolean(
+    onReconnect &&
+    windows.length === 0 &&
+    (needsProviderLogin(limits) || reconnectState !== "idle"),
+  );
   const tightest = windows.reduce<RateLimitWindow | null>((best, entry) => {
     if (!best || entry.window.usedPercent > best.usedPercent) {
       return entry.window;
@@ -54,12 +79,26 @@ export function UsageProviderChip({
     .map((entry) => rateLimitWindowTooltip(entry.window, now))
     .join(" · ");
   const providerLabel = HARNESS_TITLE[limits.provider];
+  const mascotProject = project ? projectName(project) : providerLabel;
+  const appearanceKey = project ? projectKey(project) : mascotProject;
+  const mascotName = resolveTabGroupMascot(
+    appearanceKey,
+    loadTabGroupMascots(),
+  );
+  const mascotColor = resolveTabGroupColor(
+    appearanceKey,
+    loadTabGroupColors(),
+    loadTabGroupCustomColors(),
+    mascotProject,
+  );
 
   useEffect(() => {
     if (open) return;
     setResetAction("idle");
     setActiveResetKey(null);
     setResetError(null);
+    setReconnectState("idle");
+    setReconnectError(null);
   }, [open]);
 
   const dismiss = (reason: PopoverDismissReason) => {
@@ -87,12 +126,27 @@ export function UsageProviderChip({
     }
   };
 
+  const reconnect = async () => {
+    if (!onReconnect) return;
+    setReconnectState("running");
+    setReconnectError(null);
+    try {
+      await onReconnect();
+      setReconnectState("complete");
+    } catch (error) {
+      setReconnectError(
+        error instanceof Error ? error.message : "Could not complete sign-in",
+      );
+      setReconnectState("error");
+    }
+  };
+
   return (
     <>
       <button
         ref={trigger}
         type="button"
-        className="-mx-1 inline-flex h-5 min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap rounded px-1 text-content/55 transition-[background-color,color,transform] duration-150 ease-out hover:bg-content/10 hover:text-content active:scale-[0.97]"
+        className="-mx-1 inline-flex h-5 min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap rounded px-1 text-content/55 transition-[background-color,color,transform] duration-150 ease-out hover:bg-content/10 hover:text-content focus-visible:outline-2 focus-visible:outline-accent active:scale-[0.97]"
         aria-label={`${providerLabel} usage details`}
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -149,72 +203,86 @@ export function UsageProviderChip({
           role="dialog"
           aria-label={`${providerLabel} usage details`}
           tabIndex={-1}
-          className="overflow-y-auto p-2.5 text-content"
+          className={`overflow-y-auto text-content ${loginView ? "" : "p-2.5"}`}
         >
-          <div className="flex items-start gap-2.5 px-1 pb-2.5 pt-0.5">
-            <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-content/[0.06] ring-1 ring-inset ring-content/[0.07]">
-              <HarnessIcon harness={limits.provider} className="size-4" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <h2 className="text-[13px] font-medium leading-4">
-                {providerLabel} usage
-              </h2>
-              <p className="mt-0.5 text-[10px] leading-4 text-content/40">
-                {updatedLabel(limits, now)}
-              </p>
-            </div>
-            {limits.status === "fetching" ? (
-              <span className="mt-0.5 inline-flex items-center gap-1 text-[10px] text-content/40">
-                <RefreshCw
-                  className="size-2.5 animate-spin"
-                  strokeWidth={1.75}
-                  aria-hidden
-                />
-                Updating
-              </span>
-            ) : null}
-          </div>
-
-          {limits.status === "error" && windows.length > 0 ? (
-            <p className="mb-2 rounded-lg bg-amber-400/10 px-2.5 py-2 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
-              Couldn’t refresh. Showing the last available snapshot.
-            </p>
-          ) : null}
-
-          {windows.length > 0 ? (
-            <div className="flex flex-col gap-1.5">
-              {windows.map((entry) => (
-                <UsageWindowCard
-                  key={entry.key}
-                  kind={entry.key}
-                  window={entry.window}
-                  now={now}
-                />
-              ))}
-            </div>
-          ) : (
-            <EmptyUsageState limits={limits} loading={loading} />
-          )}
-
-          {limits.provider === "codex" ? (
-            <BankedResets
-              limits={limits}
-              now={now}
-              action={resetAction}
-              activeResetKey={activeResetKey}
-              error={resetError}
-              onConfirm={(creditId) => {
-                setActiveResetKey(creditId);
-                setResetAction("confirming");
-              }}
-              onCancel={() => {
-                setActiveResetKey(null);
-                setResetAction("idle");
-              }}
-              onUse={useReset}
-              canUse={Boolean(onConsumeReset)}
+          {loginView ? (
+            <ProviderSignInPanel
+              harness={limits.provider}
+              state={reconnectState}
+              error={reconnectError}
+              onSignIn={() => void reconnect()}
             />
-          ) : null}
+          ) : (
+            <>
+              <div className="flex items-start gap-2.5 px-1 pb-2.5 pt-0.5">
+                <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-content/[0.06] ring-1 ring-inset ring-content/[0.07]">
+                  <HarnessIcon harness={limits.provider} className="size-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h2 className="text-[13px] font-medium leading-4">
+                    {providerLabel} usage
+                  </h2>
+                  <p className="mt-0.5 text-[10px] leading-4 text-content/40">
+                    {updatedLabel(limits, now)}
+                  </p>
+                </div>
+                {limits.status === "fetching" ? (
+                  <span className="mt-0.5 inline-flex items-center gap-1 text-[10px] text-content/40">
+                    <RefreshCw
+                      className="size-2.5 animate-spin"
+                      strokeWidth={1.75}
+                      aria-hidden
+                    />
+                    Updating
+                  </span>
+                ) : null}
+              </div>
+
+              {limits.status === "error" && windows.length > 0 ? (
+                <p className="mb-2 rounded-lg bg-amber-400/10 px-2.5 py-2 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
+                  Couldn’t refresh. Showing the last available snapshot.
+                </p>
+              ) : null}
+
+              {windows.length > 0 ? (
+                <div className="flex flex-col gap-1.5">
+                  {windows.map((entry) => (
+                    <UsageWindowCard
+                      key={entry.key}
+                      kind={entry.key}
+                      window={entry.window}
+                      now={now}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <EmptyUsageState limits={limits} loading={loading} />
+              )}
+
+              {limits.provider === "codex" ? (
+                <BankedResets
+                  limits={limits}
+                  now={now}
+                  action={resetAction}
+                  activeResetKey={activeResetKey}
+                  error={resetError}
+                  mascotProject={mascotProject}
+                  mascotName={mascotName}
+                  mascotColor={mascotColor}
+                  onConfirm={(creditId) => {
+                    setActiveResetKey(creditId);
+                    setResetAction("confirming");
+                  }}
+                  onCancel={() => {
+                    setActiveResetKey(null);
+                    setResetAction("idle");
+                  }}
+                  onUse={useReset}
+                  canUse={Boolean(onConsumeReset)}
+                />
+              ) : null}
+            </>
+          )}
         </Popover>
       ) : null}
     </>
@@ -293,6 +361,9 @@ function BankedResets({
   action,
   activeResetKey,
   error,
+  mascotProject,
+  mascotName,
+  mascotColor,
   onConfirm,
   onCancel,
   onUse,
@@ -303,6 +374,9 @@ function BankedResets({
   action: ResetActionState;
   activeResetKey: string | null;
   error: string | null;
+  mascotProject: string;
+  mascotName: string | null;
+  mascotColor: string;
   onConfirm: (rowKey: string) => void;
   onCancel: () => void;
   onUse: (credit: RateLimitResetCredit | undefined, rowKey: string) => void;
@@ -318,11 +392,19 @@ function BankedResets({
     ...detailedCredits,
     ...Array.from({ length: unlistedCount }, () => null),
   ];
+  const hasBankedReset = count != null && count > 0;
   return (
-    <section className="mt-2.5 border-t border-content/[0.08] px-1 pt-2.5">
-      <div className="flex items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <h3 className="text-[11px] font-medium">Banked resets</h3>
+    <section className="mt-2.5 border-t border-content/[0.08] pt-2.5">
+      <div className="relative min-h-[78px] overflow-hidden rounded-lg bg-content/[0.04] px-3 py-3 pr-[84px] ring-1 ring-inset ring-content/[0.06]">
+        <div className="relative z-10 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <h3 className="text-[11px] font-medium">Banked resets</h3>
+            {count != null ? (
+              <span className="rounded-full bg-content/[0.07] px-1.5 py-px text-[9px] font-medium tabular-nums text-content/65 ring-1 ring-inset ring-content/[0.07]">
+                {count}
+              </span>
+            ) : null}
+          </div>
           <p className="mt-0.5 text-[10px] leading-4 text-content/40">
             {count == null
               ? "Not reported by this account"
@@ -331,16 +413,17 @@ function BankedResets({
                 : `${count} ${count === 1 ? "reset" : "resets"} available`}
           </p>
         </div>
-        {count != null ? (
-          <span className="rounded-full bg-content/[0.07] px-2 py-0.5 text-[10px] font-medium tabular-nums text-content/65 ring-1 ring-inset ring-content/[0.07]">
-            {count}
-          </span>
-        ) : null}
+        <BankedResetMascot
+          project={mascotProject}
+          name={mascotName}
+          color={mascotColor}
+          happy={hasBankedReset}
+        />
       </div>
 
       {count != null && count > 0 ? (
         <div
-          className="mt-2 max-h-56 overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable]"
+          className="mt-2 max-h-56 overflow-y-auto overscroll-contain"
           aria-label="Available banked resets"
         >
           <div className="flex flex-col gap-1.5">
@@ -367,6 +450,90 @@ function BankedResets({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function BankedResetMascot({
+  project,
+  name,
+  color,
+  happy,
+}: {
+  project: string;
+  name: string | null;
+  color: string;
+  happy: boolean;
+}) {
+  const mascot = projectMascot(project, name);
+  const spritePath = `${mascot.restPath}${mascotFacePlatePath(mascot.rest)}`;
+  const maskId = `banked-reset-mascot-${useId().replace(/:/g, "")}`;
+  return (
+    <div
+      className="reset-mascot-scene"
+      data-reset-mascot-mood={happy ? "happy" : "sad"}
+      data-mascot-name={mascot.name}
+      style={{ color }}
+      aria-hidden
+    >
+      <span className="reset-mascot-glow" />
+      {happy ? (
+        <>
+          <span className="reset-mascot-spark reset-mascot-spark-a" />
+          <span className="reset-mascot-spark reset-mascot-spark-b" />
+        </>
+      ) : null}
+      <svg
+        className="reset-mascot-sprite"
+        viewBox="0 0 8 8"
+        shapeRendering="crispEdges"
+      >
+        <defs>
+          <mask
+            id={maskId}
+            maskUnits="userSpaceOnUse"
+            x="0"
+            y="0"
+            width="8"
+            height="8"
+          >
+            <rect width="8" height="8" fill="black" />
+            <path d={spritePath} fill="white" />
+            {happy ? (
+              <g fill="black">
+                <rect x="2" y="3" width="1" height="1" />
+                <rect x="5" y="3" width="1" height="1" />
+                <rect x="2" y="4" width="1" height="1" />
+                <rect x="5" y="4" width="1" height="1" />
+                <rect x="3" y="5" width="2" height="1" />
+              </g>
+            ) : (
+              <g fill="black">
+                <rect x="1" y="3" width="1" height="1" />
+                <rect x="4" y="3" width="1" height="1" />
+                <rect x="3" y="4" width="2" height="1" />
+                <rect x="2" y="5" width="1" height="1" />
+                <rect x="5" y="5" width="1" height="1" />
+              </g>
+            )}
+          </mask>
+        </defs>
+        <path d={spritePath} fill="currentColor" mask={`url(#${maskId})`} />
+      </svg>
+      {!happy ? <span className="reset-mascot-tear" /> : null}
+    </div>
+  );
+}
+
+/** Fill only the middle of each face row before cutting the mood back out. */
+function mascotFacePlatePath(rows: readonly string[]): string {
+  return mascotPath(
+    rows.map((row, y) => {
+      if (y < 2 || y > 5) return ".".repeat(row.length);
+      const first = row.indexOf("#");
+      const last = row.lastIndexOf("#");
+      if (first < 0) return ".".repeat(row.length);
+      return `${".".repeat(first)}${"#".repeat(last - first + 1)}${".".repeat(row.length - last - 1)}`;
+    }),
   );
 }
 
@@ -498,6 +665,19 @@ function EmptyUsageState({
         </p>
       ) : null}
     </div>
+  );
+}
+
+export function needsProviderLogin(limits: ProviderRateLimits): boolean {
+  if (limits.status === "unavailable") return true;
+  if (limits.status !== "error") return false;
+  const text = limits.error?.toLowerCase() ?? "";
+  return (
+    text.includes("expired") ||
+    text.includes("sign-in") ||
+    text.includes("not signed in") ||
+    text.includes("not connected") ||
+    text.includes("authentication")
   );
 }
 
