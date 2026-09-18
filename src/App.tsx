@@ -4,7 +4,9 @@ import { modelsFor } from "./lib/models";
 import { isHarnessAvailable } from "./lib/harness/availability";
 import {
   completeOrchestrationProposal,
+  completeOrRepairOrchestrationProposal,
   orchestrationPlanningPrompt,
+  orchestrationRepairPrompt,
   proposalBlock,
   validateOrchestrationSettings,
   withOrchestrationProposal,
@@ -256,11 +258,24 @@ import {
   applyPlaceSessionOnPane,
   filterTabsForProject,
   findOpenSessionTab,
+  openAddToChatSessionPane,
   planWorkspaceTabClose,
   workspaceTabCwd,
   focusedWorkspaceTabCwd,
 } from "./lib/workspaceTabGroups";
+import {
+  ADD_TO_CHAT_EVENT,
+  composerSeedForAddToChat,
+  type AddToChatRequest,
+} from "./lib/quoteDraft";
 import { runSessionRemoval } from "./lib/sessionRemoval";
+import {
+  DEFAULT_PROVIDER_ACCOUNT_ID,
+  providerAccountExists,
+  selectedProviderAccountId,
+  supportsProviderAccounts,
+  type ProviderAccountProvider,
+} from "./lib/providerAccounts";
 import {
   HARNESSES,
   HARNESS_LABEL,
@@ -395,6 +410,7 @@ import { markLinkedSessionUpdateSeen } from "./lib/linkedSessionSeen";
 import { linearIssueDetails, peekLinearIssueDetails } from "./lib/linear";
 import { gitlabWorkItemDetails, peekGitlabWorkItemDetails } from "./lib/gitlab";
 import {
+  loadCloseToTray,
   loadLiveAgentsEnabled,
   loadNotesEnabled,
   loadDiffViewer,
@@ -439,9 +455,10 @@ import type { InstalledUpdate } from "./lib/updateNotice";
 import {
   bindResumedSessions,
   closeBusyWindow,
+  closeCurrentWindow,
+  confirmReload,
   hasInFlightSessions,
   hideCurrentWindow,
-  closeCurrentWindow,
   isAppQuitting,
   persistLiveTranscripts,
   persistQuitState,
@@ -538,7 +555,9 @@ function withHarnessChoice(
     ...(session.model === model
       ? {}
       : { context: dropContextWindow(session.context) }),
-    ...(session.harness === harness ? {} : { providerSessionId: undefined }),
+    ...(session.harness === harness
+      ? {}
+      : { providerSessionId: undefined, providerAccountId: undefined }),
   };
 }
 
@@ -566,6 +585,9 @@ function withPlanBuildTarget(
       ...(plan.restoreProviderSessionId
         ? { providerSessionId: plan.restoreProviderSessionId }
         : { providerSessionId: undefined }),
+      ...(plan.restoreProviderAccountId
+        ? { providerAccountId: plan.restoreProviderAccountId }
+        : { providerAccountId: undefined }),
     };
   }
   if (plan.kind === "empty") {
@@ -677,6 +699,7 @@ export default function App({
       !!tab && resumed.sessions.some((session) => session.id === tab.focusedId)
     );
   });
+  const [composerFocusToken, setComposerFocusToken] = useState(0);
   /** Tab id -> project name, kept in sync with the rendered title tabs. */
   const tabProjectsRef = useRef(new Map<string, string>());
   const projectOfTab = useCallback(
@@ -769,6 +792,8 @@ export default function App({
     useState<EditorNavigationTarget | null>(null);
   const editorNavigationToken = useRef(0);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
+  const [filePickerInitialQuery, setFilePickerInitialQuery] = useState("");
+  const [filePickerResetToken, setFilePickerResetToken] = useState(0);
   const [dirtyFiles, setDirtyFiles] = useState<Set<string>>(
     () => new Set(windowTransfer?.dirtyFileIds ?? []),
   );
@@ -1062,6 +1087,60 @@ export default function App({
   }, [tabs]);
 
   const sessionDefaults = active ?? sessions[0];
+
+  useEffect(() => {
+    const openSessionForAddToChat = (event: Event) => {
+      const detail = (event as CustomEvent<AddToChatRequest>).detail;
+      if (!detail?.text) return;
+
+      const currentTabs = tabsRef.current;
+      const currentSessions = sessionsRef.current;
+      const tab =
+        currentTabs.find((entry) => entry.id === activeTabIdRef.current) ??
+        currentTabs[0];
+      if (!tab) return;
+      const mountedSessionIds = new Set(
+        currentSessions.map((session) => session.id),
+      );
+      if (leafIds(tab.layout).some((id) => mountedSessionIds.has(id))) return;
+
+      const cwd =
+        focusedWorkspaceTabCwd(tab, currentSessions) ??
+        sessionDefaults?.cwd ??
+        projectCwdRef.current;
+      const composerSeed = composerSeedForAddToChat(detail.text, detail.mode);
+      if (!composerSeed) return;
+
+      const session = {
+        ...newDefaultSession(cwd, sessionDefaults?.runtimeMode),
+        composerSeed,
+      };
+      const openedTab = openAddToChatSessionPane({
+        tab,
+        sessions: currentSessions,
+        sessionId: session.id,
+      });
+      // A mounted session pane owns the normal add-to-chat path.
+      if (!openedTab) return;
+
+      const nextSessions = [...currentSessions, session];
+      const nextTabs = currentTabs.map((entry) =>
+        entry.id === tab.id ? openedTab : entry,
+      );
+      sessionsRef.current = nextSessions;
+      tabsRef.current = nextTabs;
+      setSessions(nextSessions);
+      setTabs(nextTabs);
+      setActiveTabId(tab.id);
+      setProjectTerminalFocused(false);
+      setComposerFocused(true);
+    };
+
+    window.addEventListener(ADD_TO_CHAT_EVENT, openSessionForAddToChat);
+    return () =>
+      window.removeEventListener(ADD_TO_CHAT_EVENT, openSessionForAddToChat);
+  }, [sessionDefaults?.cwd, sessionDefaults?.runtimeMode]);
+
   const activeSkillContext = active
     ? nativeSkillContextForSession(active)
     : null;
@@ -1125,7 +1204,11 @@ export default function App({
   }, [activeHarness]);
 
   const usageProviders = useMemo(() => {
-    if (active?.harness === "claude" || active?.harness === "codex") {
+    if (
+      active?.harness === "claude" ||
+      active?.harness === "codex" ||
+      active?.harness === "opencode"
+    ) {
       return [active.harness];
     }
     return [];
@@ -1136,8 +1219,13 @@ export default function App({
       id: active.id,
       harness: active.harness,
       authRequired: latestTurnNeedsHarnessLogin(active.blocks),
+      providerAccountId:
+        active.providerAccountId ??
+        (active.blocks.some((block) => block.role === "user")
+          ? DEFAULT_PROVIDER_ACCOUNT_ID
+          : undefined),
     };
-  }, [active?.id, active?.harness, active?.blocks]);
+  }, [active?.id, active?.harness, active?.blocks, active?.providerAccountId]);
   const activeProviderSignInRequest = useMemo(() => {
     if (
       !active ||
@@ -1263,6 +1351,17 @@ export default function App({
         if (focused) {
           flushHarnessEvents();
           syncDockBadge(sessionsRef.current);
+          if (
+            document.activeElement === document.body &&
+            !projectTerminalFocusedRef.current &&
+            !searchViewOpenRef.current &&
+            !inboxViewOpenRef.current &&
+            !notesViewOpenRef.current &&
+            !settingsOpenRef.current
+          ) {
+            setComposerFocused(true);
+            setComposerFocusToken((token) => token + 1);
+          }
         }
       })
       .then((fn) => {
@@ -1297,12 +1396,14 @@ export default function App({
         // Listening here makes close our job. Letting the default path run
         // calls JS `window.destroy`, which Tauri denies without a permission.
         event.preventDefault();
+        const toTray = loadCloseToTray();
         if (hasInFlightSessions(sessionsRef.current)) {
           flushHarnessEvents();
-          if (!IS_MAC) {
+          if (!toTray && !IS_MAC) {
             void closeBusyWindow();
             return;
           }
+          // Not `persistQuitState`: that marks the live turns interrupted.
           void persistLiveTranscripts(sessionsRef.current);
           void hideCurrentWindow();
           return;
@@ -1316,7 +1417,7 @@ export default function App({
           "unload",
           projectTerminalsRef.current,
         ).finally(() => {
-          void closeCurrentWindow();
+          void (toTray ? hideCurrentWindow() : closeCurrentWindow());
         });
       })
       .then((fn) => {
@@ -1670,6 +1771,44 @@ export default function App({
       );
     },
     [projectOfTab],
+  );
+
+  const onSelectProviderAccount = useCallback(
+    (provider: ProviderAccountProvider, accountId: string) => {
+      if (!active || active.harness !== provider) return;
+      const currentId = active.providerAccountId ?? DEFAULT_PROVIDER_ACCOUNT_ID;
+      if (currentId === accountId) return;
+
+      if (active.blocks.length === 0 && !active.busy) {
+        setSessions((current) =>
+          current.map((session) =>
+            session.id === active.id
+              ? { ...session, providerAccountId: accountId }
+              : session,
+          ),
+        );
+        return;
+      }
+
+      // Provider thread ids are account-owned. Keep the current conversation
+      // pinned to its account and open a clean one for the selected profile.
+      const session = {
+        ...newSession(
+          active.harness,
+          active.cwd,
+          active.model,
+          active.runtimeMode,
+          active.modelSettings,
+        ),
+        providerAccountId: accountId,
+      };
+      const tab = newTab(session.id);
+      setSessions((current) => [...current, session]);
+      appendTab(tab, active.cwd);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+    },
+    [active, appendTab],
   );
 
   const onOpenWhatsNew = useCallback((version: string) => {
@@ -3163,6 +3302,7 @@ export default function App({
           restored.id,
           restored.providerSessionId,
           sessionWorkCwd(restored),
+          restored.providerAccountId,
         );
       }
       lastPersisted.current.set(restored.id, persistFingerprint(restored));
@@ -4436,6 +4576,9 @@ export default function App({
               ...(plan.restoreProviderSessionId
                 ? { providerSessionId: plan.restoreProviderSessionId }
                 : { providerSessionId: undefined }),
+              ...(plan.restoreProviderAccountId
+                ? { providerAccountId: plan.restoreProviderAccountId }
+                : { providerAccountId: undefined }),
             };
           }
           if (plan.kind === "empty") {
@@ -4482,6 +4625,7 @@ export default function App({
         planBlockId?: string;
         buildTarget?: PlanBuildTarget;
         managed?: boolean;
+        orchestrationRetry?: OrchestrationProposal;
         onSettled?: (outcome: ControlOutcome) => void;
       },
     ) => {
@@ -4565,6 +4709,26 @@ export default function App({
       if (isPreparingHandoff(current)) return false;
       saveRecentModelChoice(current.harness, current.model);
       const workCwd = sessionWorkCwd(current);
+      const accountProvider = supportsProviderAccounts(current.harness)
+        ? current.harness
+        : undefined;
+      const providerAccountId = accountProvider
+        ? (current.providerAccountId ??
+          selectedProviderAccountId(accountProvider, current.cwd))
+        : undefined;
+      if (
+        accountProvider &&
+        providerAccountId &&
+        !providerAccountExists(accountProvider, providerAccountId)
+      ) {
+        enqueueHarnessEvent(sessionId, {
+          type: "session.error",
+          message:
+            "This conversation uses a removed provider account. Switch accounts from the usage control to start a new conversation.",
+        });
+        flushHarnessEvents();
+        return false;
+      }
       const submittedText = intent === "build" ? "Build approved plan" : text;
       const rawCommand = isNativeCommandPrompt(submittedText, current.harness);
       const harnessText = rawCommand
@@ -4744,6 +4908,7 @@ export default function App({
           const titled = isFirstTurn ? titleSeed : selected.title;
           let next: Session = {
             ...selected,
+            providerAccountId,
             inboxCard: rawCommand ? s.inboxCard : undefined,
             noteCard: rawCommand ? s.noteCard : undefined,
             handoffCard: rawCommand ? s.handoffCard : undefined,
@@ -4821,6 +4986,7 @@ export default function App({
           sessionId,
           cwd: workCwd,
           message: titleMessage,
+          providerAccountId,
         })
           .then(async (generated) => {
             const linkedWorkItem = await resolveLinkedWorkItem(
@@ -4886,6 +5052,7 @@ export default function App({
       let controlText = "";
       let proposalText = "";
       let nativeProposalText = "";
+      let completedProposal: OrchestrationProposal | undefined;
       void (async () => {
         if (proposalDraft && proposalId) {
           const settings = await discoverOrchestrationSettings();
@@ -4920,6 +5087,7 @@ export default function App({
                 cwd: workCwd,
                 model: pendingSwitch.fromModel,
                 modelSettings: pendingSwitch.fromSettings,
+                providerAccountId: pendingSwitch.fromProviderAccountId,
                 userRequest: text,
               });
             } catch {
@@ -4994,29 +5162,63 @@ export default function App({
                   cwd: workCwd,
                 });
           const turnPrompt = proposalDraft
-            ? orchestrationPlanningPrompt(
-                prompt,
-                proposalDraft.settings,
-                proposalDraft.cwd,
-              )
+            ? options?.orchestrationRetry?.response
+              ? orchestrationRepairPrompt({
+                  ...proposalDraft,
+                  error: options.orchestrationRetry.error,
+                  response: options.orchestrationRetry.response,
+                })
+              : orchestrationPlanningPrompt(
+                  prompt,
+                  proposalDraft.settings,
+                  proposalDraft.cwd,
+                )
             : intent === "plan" && !rawCommand
               ? planTurnPrompt(prompt)
               : prompt;
           const earlier = queuedHandoff
             ? userMessagesAfterHandoff(current)
             : [];
-          await sendHarnessTurn({
-            harness: current.harness,
-            sessionId,
-            cwd: workCwd,
-            model: current.model,
-            modelSettings: current.modelSettings,
-            runtimeMode: current.runtimeMode,
-            intent: intent === "orchestrate" ? "plan" : intent,
-            // A lead drives the control CLI over loopback; without this the
-            // harness sandbox denies the socket and it cannot supervise.
-            controlsAgents: orchestrator.run(sessionId)?.status === "active",
-            text: orchestrator.prompt(
+          const sendTurn = (text: string, turnAttachments = prepared) =>
+            sendHarnessTurn({
+              harness: current.harness,
+              sessionId,
+              cwd: workCwd,
+              model: current.model,
+              modelSettings: current.modelSettings,
+              providerAccountId,
+              runtimeMode: current.runtimeMode,
+              intent: intent === "orchestrate" ? "plan" : intent,
+              // A lead drives the control CLI over loopback; without this the
+              // harness sandbox denies the socket and it cannot supervise.
+              controlsAgents: orchestrator.run(sessionId)?.status === "active",
+              text,
+              attachments: turnAttachments,
+              onEvent: (event) => {
+                if (turnGen.current.get(sessionId) !== gen) return;
+                orchestrator.observe(sessionId, event);
+                if (options?.onSettled && event.type === "message.delta")
+                  controlText = (controlText + event.text).slice(-20_000);
+                if (options?.onSettled && event.type === "message.completed")
+                  controlText += "\n";
+                if (event.type === "session.error")
+                  controlOutcome.error = event.message;
+                if (
+                  wrap &&
+                  (event.type === "session.started" ||
+                    event.type === "session.providerBound")
+                ) {
+                  revealHandoff(wrap.text);
+                }
+                nudgeOpenEditors(event, workCwd);
+                if (!orchestrator.forSession(sessionId))
+                  trackSessionEdits(sessionId, workCwd, event);
+                const routed = routePlanEvent(event);
+                if (routed) enqueueHarnessEvent(sessionId, routed);
+              },
+            });
+          await sendTurn(
+            orchestrator.prompt(
               sessionId,
               inboxAskPrompt(
                 rawCommand ? undefined : current.inboxAsk,
@@ -5030,30 +5232,27 @@ export default function App({
                   : turnPrompt,
               ),
             ),
-            attachments: prepared,
-            onEvent: (event) => {
-              if (turnGen.current.get(sessionId) !== gen) return;
-              orchestrator.observe(sessionId, event);
-              if (options?.onSettled && event.type === "message.delta")
-                controlText = (controlText + event.text).slice(-20_000);
-              if (options?.onSettled && event.type === "message.completed")
-                controlText += "\n";
-              if (event.type === "session.error")
-                controlOutcome.error = event.message;
-              if (
-                wrap &&
-                (event.type === "session.started" ||
-                  event.type === "session.providerBound")
-              ) {
-                revealHandoff(wrap.text);
-              }
-              nudgeOpenEditors(event, workCwd);
-              if (!orchestrator.forSession(sessionId))
-                trackSessionEdits(sessionId, workCwd, event);
-              const routed = routePlanEvent(event);
-              if (routed) enqueueHarnessEvent(sessionId, routed);
-            },
-          });
+          );
+          if (proposalDraft && !providerFailureSeen) {
+            completedProposal = await completeOrRepairOrchestrationProposal(
+              proposalDraft,
+              nativeProposalText || proposalText,
+              async (repairPrompt) => {
+                proposalText = "";
+                nativeProposalText = "";
+                await sendTurn(repairPrompt, []);
+                if (providerFailureSeen)
+                  throw new Error(
+                    controlOutcome.error ??
+                      "The lead could not repair the proposal.",
+                  );
+                return nativeProposalText || proposalText;
+              },
+              () =>
+                turnGen.current.get(sessionId) === gen &&
+                !isProviderFailureText(nativeProposalText || proposalText),
+            );
+          }
           if (turnGen.current.get(sessionId) !== gen) return;
           if (wrap) {
             setSessions((prev) =>
@@ -5117,14 +5316,16 @@ export default function App({
                   ? withOrchestrationProposal(
                       stopped,
                       proposalId,
-                      completeOrchestrationProposal(
-                        proposalDraft,
-                        nativeProposalText || proposalText,
-                        providerFailed || !buildSucceeded
-                          ? (controlOutcome.error ??
-                              "The lead could not finish planning.")
-                          : undefined,
-                      ),
+                      completedProposal && !providerFailed && buildSucceeded
+                        ? completedProposal
+                        : completeOrchestrationProposal(
+                            proposalDraft,
+                            nativeProposalText || proposalText,
+                            providerFailed || !buildSucceeded
+                              ? (controlOutcome.error ??
+                                  "The lead could not finish planning.")
+                              : undefined,
+                          ),
                     )
                   : intent === "plan" && !nativePlanSeen && !providerFailed
                     ? promoteLastAssistantToPlan(stopped, planEventKey)
@@ -5611,6 +5812,10 @@ export default function App({
             cwd: workCwd,
             model: current.model,
             modelSettings: current.modelSettings,
+            providerAccountId: supportsProviderAccounts(current.harness)
+              ? (current.providerAccountId ??
+                selectedProviderAccountId(current.harness, current.cwd))
+              : undefined,
             runtimeMode: current.runtimeMode,
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
@@ -5799,7 +6004,7 @@ export default function App({
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
       createWorker: async (run, task) => {
-        await invoke("control_attach_worker", {
+        const scratchDir = await invoke<string>("control_attach_worker", {
           leadId: run.leadId,
           sessionId: task.sessionId,
         });
@@ -5830,7 +6035,7 @@ export default function App({
             sessionsRef.current = next;
             setSessions(next);
           }
-          return;
+          return scratchDir;
         }
         const restored = await getSession(task.sessionId);
         if (
@@ -5876,12 +6081,14 @@ export default function App({
             worker.id,
             worker.providerSessionId,
             worker.cwd,
+            worker.providerAccountId,
           );
         await upsertSession(worker);
         const next = [...sessionsRef.current, worker];
         sessionsRef.current = next;
         setSessions(next);
         // Workers belong to the lead's agent panel; no workspace tab is created.
+        return scratchDir;
       },
       submit: (id, text, done) => {
         // Commit the new turn before the scheduler or confirmation updates
@@ -6167,7 +6374,10 @@ export default function App({
           (block) => block.id === blockId,
         )?.orchestration;
         if (!session || session.busy || !proposal) return;
-        onSubmit(leadId, proposal.request, [], { intent: "orchestrate" });
+        onSubmit(leadId, proposal.request, [], {
+          intent: "orchestrate",
+          orchestrationRetry: proposal,
+        });
       },
     }),
     [onOpenApprovalSession, queueWorkerPanes, onSubmit, updateOrchestrationCard],
@@ -6297,7 +6507,23 @@ export default function App({
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
+    setFilePickerInitialQuery("");
+    setFilePickerResetToken((token) => token + 1);
     setFilePickerOpen(true);
+  }, []);
+  const onOpenCommandPalette = useCallback(() => {
+    setSearchViewOpen(false);
+    setInboxViewOpen(false);
+    setNotesViewOpen(false);
+    setFilePickerInitialQuery(">");
+    setFilePickerResetToken((token) => token + 1);
+    setFilePickerOpen(true);
+  }, []);
+  const onReload = useCallback(() => {
+    void (async () => {
+      if (!(await confirmReload(dirtyFilesRef.current.size > 0))) return;
+      window.location.reload();
+    })();
   }, []);
 
   const onFindInProject = useCallback(() => {
@@ -6545,6 +6771,8 @@ export default function App({
     onFocusDir,
     onToggleSidebar,
     onGoToFile,
+    onOpenCommandPalette,
+    onReload,
     onFindInProject,
     onOpenSearch,
     onOpenInbox,
@@ -6573,6 +6801,8 @@ export default function App({
     onFocusDir,
     onToggleSidebar,
     onGoToFile,
+    onOpenCommandPalette,
+    onReload,
     onFindInProject,
     onOpenSearch,
     onOpenInbox,
@@ -6736,6 +6966,18 @@ export default function App({
         run("go_to_file", actions.current.onGoToFile);
         return;
       }
+      if (mod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        e.stopPropagation();
+        run("open_command_palette", actions.current.onOpenCommandPalette);
+        return;
+      }
+      if (mod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "r") {
+        e.preventDefault();
+        e.stopPropagation();
+        run("reload", actions.current.onReload);
+        return;
+      }
       if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
         const target = e.target instanceof Element ? e.target : null;
         if (target?.closest(".monocode-terminal") && e.ctrlKey && !e.metaKey) {
@@ -6811,7 +7053,11 @@ export default function App({
       listen("open_project", () => {
         void actions.current.pickProject();
       }),
-      listen("go_to_file", () => actions.current.onGoToFile()),
+      listen("go_to_file", () => run("go_to_file", actions.current.onGoToFile)),
+      listen("open_command_palette", () =>
+        run("open_command_palette", actions.current.onOpenCommandPalette),
+      ),
+      listen("reload", () => run("reload", actions.current.onReload)),
       listen("open_search", () => actions.current.onOpenSearch()),
       listen("open_inbox", () => actions.current.onOpenInbox()),
       listen("open_notes", () => actions.current.onOpenNotes()),
@@ -7183,6 +7429,7 @@ export default function App({
                               composerFocused={
                                 composerFocused && !projectTerminalFocused
                               }
+                              composerFocusToken={composerFocusToken}
                               onSelectFile={onSelectFileSurface}
                               onCloseFile={onCloseFile}
                               onCloseOtherFiles={onCloseOtherFiles}
@@ -7256,6 +7503,7 @@ export default function App({
                         focused={visible}
                         inSplit={false}
                         composerFocused={composerFocused}
+                        composerFocusToken={composerFocusToken}
                       />
                     </SessionSurface>
                   );
@@ -7315,7 +7563,11 @@ export default function App({
               <UsageFooter
                 providers={usageProviders}
                 session={usageSession}
-                project={projectCwd}
+                project={active?.cwd ?? projectCwd}
+                onSelectAccount={onSelectProviderAccount}
+                onManageAccounts={() =>
+                  openSettings("providers", "provider-accounts")
+                }
                 terminals={runningTerminals}
                 terminalOpen={runningTerminalOpen}
                 onToggleTerminal={onToggleRunningTerminal}
@@ -7337,10 +7589,15 @@ export default function App({
 
           {filePickerOpen ? (
             <FilePicker
+              key={filePickerResetToken}
               open
               cwd={gitCwd}
               openPaths={openFilePaths}
+              initialQuery={filePickerInitialQuery}
               onOpenFile={onOpenFile}
+              onRunAction={(id) => {
+                if (id === "reload") actions.current.onReload();
+              }}
               onClose={() => setFilePickerOpen(false)}
             />
           ) : null}

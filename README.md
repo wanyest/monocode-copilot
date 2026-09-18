@@ -13,7 +13,7 @@
   <img width="1680" height="1050" alt="Screenshot 2026-09-04 at 06 34 00" src="https://github.com/user-attachments/assets/2cd4a6ec-eb1e-4b45-8627-a76442ea3874" />
 </p>
 
-Works with your subscriptions on Claude Code, Codex, GitHub Copilot, Cursor, Grok Build, OpenCode, Pi, omp, and fx. If they’re installed and logged in, MonoCode-Copilot can run them. Tabs are sessions. The composer is the input. MonoCode-Copilot does not sell tokens.
+Works with your subscriptions on Claude Code, Codex, GitHub Copilot, Cursor, Grok Build, OpenCode, Pi, omp, fx, and Hermes Agent. If they’re installed and logged in, MonoCode-Copilot can run them. Tabs are sessions. The composer is the input. MonoCode-Copilot does not sell tokens.
 
 ## Install
 
@@ -28,6 +28,7 @@ Works with your subscriptions on Claude Code, Codex, GitHub Copilot, Cursor, Gro
 > - [Pi](https://pi.dev/) - `npm install -g @earendil-works/pi-coding-agent`
 > - [omp](https://omp.sh) - `curl -fsSL https://omp.sh/install | sh`
 > - [fx](https://fx.sh) - `curl -fsSL https://fx.sh/setup.sh | bash` then `fx login`
+> - [Hermes Agent](https://github.com/NousResearch/hermes-agent) - macOS/Linux: `curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`; Windows PowerShell: `iex (irm https://hermes-agent.nousresearch.com/install.ps1)`; then run `hermes model`
 
 macOS (Apple Silicon): download the [latest MonoCode-Copilot DMG](https://github.com/wanyest/monocode-copilot/releases/latest), open it, and drag MonoCode-Copilot to Applications.
 

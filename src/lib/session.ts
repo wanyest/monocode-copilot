@@ -22,7 +22,8 @@ export type HarnessId =
   | "opencode"
   | "pi"
   | "omp"
-  | "fx";
+  | "fx"
+  | "hermes";
 
 export const HARNESSES: HarnessId[] = [
   "claude",
@@ -34,6 +35,7 @@ export const HARNESSES: HarnessId[] = [
   "pi",
   "omp",
   "fx",
+  "hermes",
 ];
 
 export type BlockRole =
@@ -326,6 +328,8 @@ export type Session = {
   editingQueuedMessageId?: string;
   /** Provider-side conversation id (Cursor ACP session id). */
   providerSessionId?: string;
+  /** Named local credential profile used by Claude or Codex. */
+  providerAccountId?: string;
   /** Context-window level reported by the harness. Absent until it reports. */
   context?: ContextUsage;
   /**
@@ -364,6 +368,7 @@ export type PendingHarnessSwitch = {
   fromModel: string;
   fromSettings: Record<string, string>;
   fromProviderSessionId?: string;
+  fromProviderAccountId?: string;
 };
 
 export const HARNESS_LABEL: Record<HarnessId, string> = {
@@ -376,6 +381,7 @@ export const HARNESS_LABEL: Record<HarnessId, string> = {
   pi: "pi",
   omp: "omp",
   fx: "fx",
+  hermes: "hermes",
 };
 
 export const HARNESS_TITLE: Record<HarnessId, string> = {
@@ -388,6 +394,7 @@ export const HARNESS_TITLE: Record<HarnessId, string> = {
   pi: "Pi",
   omp: "omp",
   fx: "fx",
+  hermes: "Hermes Agent",
 };
 
 /** fx ACP rejects attachment prompt blocks. */

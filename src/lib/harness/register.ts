@@ -4,6 +4,7 @@ import { ensureCopilotRegistered } from "./copilotAdapter";
 import { ensureCursorRegistered } from "./cursorAdapter";
 import { ensureFxRegistered } from "./fxAdapter";
 import { ensureGrokRegistered } from "./grokAdapter";
+import { ensureHermesRegistered } from "./hermesAdapter";
 import { ensureOpenCodeRegistered } from "./opencodeAdapter";
 import { ensureOmpRegistered } from "./ompAdapter";
 import { ensurePiRegistered } from "./piAdapter";
@@ -19,4 +20,5 @@ export function registerBuiltinHarnesses(): void {
   ensurePiRegistered();
   ensureOmpRegistered();
   ensureFxRegistered();
+  ensureHermesRegistered();
 }
