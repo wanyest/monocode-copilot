@@ -169,6 +169,7 @@ export {
   generateHarnessTitle,
   generateHarnessCommitMessage,
   generateHarnessPrContent,
+  generateHarnessBranchName,
 } from "./registry";
 export type {
   ApprovalDecision,
