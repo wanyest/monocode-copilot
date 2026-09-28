@@ -86,11 +86,3 @@ jobs:
             git push origin HEAD:main
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
-
-  build-dmg:
-    name: Build DMG after upstream update
-    needs: sync
-    if: needs.sync.outputs.changed == 'true'
-    uses: ./.github/workflows/build-dmg.yml
-    with:
-      ref: ${{ needs.sync.outputs.sha }}
