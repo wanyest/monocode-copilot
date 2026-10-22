@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TurnNotReadyError } from "../../core/types";
 import type { HarnessEvent } from "../../core/types";
 
 const sent: string[] = [];
@@ -33,6 +34,7 @@ const {
   __copilotTestReset,
   respondCopilotApproval,
   sendCopilotTurn,
+  steerCopilotTurn,
   stopCopilotSession,
 } = await import("./copilot");
 
@@ -69,6 +71,7 @@ async function startTurn(
   setupMethod: "session/new" | "session/load" = "session/new",
 ) {
   const events: HarnessEvent[] = [];
+  const onAccepted = vi.fn();
   const turn = sendCopilotTurn({
     sessionId: "copilot-live",
     cwd: "/repo",
@@ -77,10 +80,12 @@ async function startTurn(
     runtimeMode: "supervised",
     text: "inspect the project",
     attachments: [],
+    onAccepted,
     onEvent: (event) => events.push(event),
   });
 
   await waitFor(() => !!outbound("initialize"), "initialize");
+  expect(onAccepted).not.toHaveBeenCalled();
   reply(outbound("initialize")!.id as number, { protocolVersion: 1 });
   await waitFor(() => !!outbound(setupMethod), setupMethod);
   reply(outbound(setupMethod)!.id as number, { sessionId: "copilot_1" });
@@ -92,12 +97,14 @@ async function startTurn(
     () => !!outbound("session/set_config_option"),
     "session/set_config_option",
   );
+  expect(onAccepted).not.toHaveBeenCalled();
   reply(outbound("session/set_config_option")!.id as number, {});
   await waitFor(() => !!outbound("session/prompt"), "session/prompt");
   return {
     events,
     promptId: outbound("session/prompt")!.id as number,
     turn,
+    onAccepted,
   };
 }
 
@@ -115,7 +122,8 @@ afterEach(async () => {
 
 describe("GitHub Copilot ACP adapter", () => {
   it("starts ACP stdio, selects the model, and streams the response", async () => {
-    const { events, promptId, turn } = await startTurn();
+    const { events, promptId, turn, onAccepted } = await startTurn();
+    expect(onAccepted).toHaveBeenCalledExactlyOnceWith();
     expect(spawned).toEqual({
       command: "/fake/copilot",
       args: ["--acp", "--stdio", "--no-auto-update", "--context", "default"],
@@ -201,5 +209,16 @@ describe("GitHub Copilot ACP adapter", () => {
     });
     reply(promptId, { stopReason: "end_turn" });
     await turn;
+  });
+
+  it("defers steering when no provider session is ready", async () => {
+    await expect(
+      steerCopilotTurn({
+        sessionId: "copilot-live",
+        cwd: "/repo",
+        model: "copilot:gpt-5.4",
+        text: "also inspect the tests",
+      }),
+    ).rejects.toBeInstanceOf(TurnNotReadyError);
   });
 });

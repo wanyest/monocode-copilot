@@ -1,4 +1,5 @@
 import { promptBlocks } from "../../../../features/sessions/model/attachments";
+import { TurnNotReadyError } from "../../core/types";
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
 import { AcpClient, type AcpHandlers } from "../../core/acp";
@@ -109,7 +110,7 @@ export async function sendCopilotTurn(input: SendTurnInput): Promise<void> {
 
 export async function steerCopilotTurn(input: SteerTurnInput): Promise<void> {
   const live = liveByThread.get(input.sessionId);
-  if (!live) throw new Error("No active GitHub Copilot session");
+  if (!live) throw new TurnNotReadyError("No active GitHub Copilot session");
   const blocks = promptBlocks(input.text, input.attachments);
   if (blocks.length === 0) return;
   const params = { sessionId: live.acpSessionId, prompt: blocks };
@@ -379,11 +380,13 @@ async function prompt(live: Live, input: SendTurnInput): Promise<void> {
   const blocks = promptBlocks(input.text, input.attachments);
   if (blocks.length === 0) return;
   try {
-    await live.acp.request(
+    const pending = live.acp.request(
       "session/prompt",
       { sessionId: live.acpSessionId, prompt: blocks },
       PROMPT_TIMEOUT_MS,
     );
+    input.onAccepted?.();
+    await pending;
     if (live.cancelled) return;
     live.onEvent({ type: "message.completed" });
     live.onEvent({ type: "reasoning.completed" });

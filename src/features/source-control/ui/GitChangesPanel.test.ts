@@ -47,7 +47,7 @@ vi.mock("../../inbox/model/inboxSelfActivity", () => ({
   recordInboxSelfActivity: vi.fn(),
 }));
 
-import { GitChangesPanel } from "./GitChangesPanel";
+import { GitChangesPanel, rememberIndex } from "./GitChangesPanel";
 import {
   gitDiffIndex,
   gitPrCreate,
@@ -87,6 +87,8 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  // Keep delayed file invalidations from reaching the next test's mocks.
+  vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
     "ResizeObserver",
@@ -176,6 +178,8 @@ describe("GitChangesPanel commit message generation", () => {
 
 afterEach(() => {
   act(() => root.unmount());
+  vi.clearAllTimers();
+  vi.useRealTimers();
   container.remove();
   document.body
     .querySelectorAll("[data-popover-side]")
@@ -400,6 +404,10 @@ describe("GitChangesPanel folder actions", () => {
     )!;
     await act(async () => stage.click());
 
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
+
     expect(alert).toHaveBeenCalledWith("Git index is locked");
     expect(stage.disabled).toBe(false);
     expect(invalidateWatchedFiles).not.toHaveBeenCalled();
@@ -490,5 +498,43 @@ describe("GitChangesPanel remote pull request", () => {
       "feature/pull",
     );
     expect(openUrl).toHaveBeenCalledWith("https://example.test/pull/42");
+  });
+});
+
+describe("worktree switching", () => {
+  it("shows cached destination data immediately while refreshing", async () => {
+    const a = index({ branch: "worktree-a" });
+    const b = index({ branch: "worktree-b" });
+    vi.mocked(gitDiffIndex).mockResolvedValueOnce(a);
+    await renderPanel("/switch/a");
+    expect(container.textContent).toContain("worktree-a");
+    rememberIndex("/switch/b", b);
+    vi.mocked(gitDiffIndex).mockImplementationOnce(() => new Promise(() => {}));
+    await renderPanel("/switch/b");
+    expect(container.textContent).toContain("worktree-b");
+    expect(container.textContent).not.toContain("worktree-a");
+  });
+
+  it("never shows previous files in an uncached worktree and ignores late results", async () => {
+    let finish!: (value: GitDiffIndex) => void;
+    vi.mocked(gitDiffIndex).mockResolvedValueOnce(
+      index({ branch: "old-worktree" }),
+    );
+    await renderPanel("/switch/old");
+    vi.mocked(gitDiffIndex).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await renderPanel("/switch/loading");
+    expect(container.textContent).not.toContain("old-worktree");
+    vi.mocked(gitDiffIndex).mockResolvedValueOnce(
+      index({ branch: "chosen-worktree" }),
+    );
+    await renderPanel("/switch/chosen");
+    await act(async () => finish(index({ branch: "late-worktree" })));
+    expect(container.textContent).toContain("chosen-worktree");
+    expect(container.textContent).not.toContain("late-worktree");
   });
 });
